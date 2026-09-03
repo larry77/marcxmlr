@@ -67,7 +67,8 @@
 #'   an unusually large individual record can itself require substantial memory.
 #' @param workers Number of local worker processes. The default, `1`, is
 #'   sequential. Values greater than one require the optional parallel
-#'   packages listed in `Suggests`.
+#'   packages listed in `Suggests` and, with current dependency versions,
+#'   R 4.3 or later.
 #' @param chunk_records Number of records assigned to each parsing and writing
 #'   task. `NULL` targets approximately two tasks per worker in each batch.
 #' @param compression Parquet compression codec passed to

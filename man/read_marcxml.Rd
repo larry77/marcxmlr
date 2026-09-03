@@ -13,7 +13,8 @@ record or \code{0} to return an empty result with the canonical schema.}
 
 \item{workers}{Number of local worker processes. The default, \code{1}, is
 sequential. Values greater than one require the optional parallel packages
-listed in \code{Suggests}.}
+listed in \code{Suggests} and, with current dependency versions, R 4.3 or
+later.}
 
 \item{chunk_records}{Number of records assigned to each parsing task.
 \code{NULL} creates one task in sequential mode and approximately two tasks

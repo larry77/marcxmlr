@@ -79,7 +79,8 @@
 #'   or `0` to return an empty result with the canonical schema.
 #' @param workers Number of local worker processes. The default, `1`, is
 #'   sequential. Values greater than one require the optional parallel
-#'   packages listed in `Suggests`.
+#'   packages listed in `Suggests` and, with current dependency versions,
+#'   R 4.3 or later.
 #' @param chunk_records Number of records assigned to each parsing task. `NULL`
 #'   creates one task in sequential mode and approximately two tasks per worker
 #'   in parallel mode.

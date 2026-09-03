@@ -115,6 +115,10 @@ install.packages(
 )
 ```
 
+The sequential core supports R 4.1 and later. With the current CRAN release
+of [`mori`](https://CRAN.R-project.org/package=mori), optional parallel parsing
+requires R 4.3 or later.
+
 ## Small real-world example: Library of Congress
 
 The Library of Congress publishes a
@@ -384,7 +388,7 @@ and its guide to
 ## Optional parallel parsing
 
 Both public functions default to `workers = 1L`. To opt into local parallel
-parsing:
+parsing, use R 4.3 or later and install the optional parallel dependencies:
 
 ```r
 workers <- max(

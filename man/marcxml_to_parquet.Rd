@@ -25,7 +25,8 @@ unusually large individual record can itself require substantial memory.}
 
 \item{workers}{Number of local worker processes. The default, \code{1}, is
 sequential. Values greater than one require the optional parallel packages
-listed in \code{Suggests}.}
+listed in \code{Suggests} and, with current dependency versions, R 4.3 or
+later.}
 
 \item{chunk_records}{Number of records assigned to each parsing and writing
 task. \code{NULL} targets approximately two tasks per worker in each batch.}
