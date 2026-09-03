@@ -15,6 +15,7 @@ License: MIT + file LICENSE
 URL: https://github.com/larry77/marcxmlr
 BugReports: https://github.com/larry77/marcxmlr/issues
 Encoding: UTF-8
+Language: en-US
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2
 Depends:
