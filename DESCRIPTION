@@ -12,6 +12,8 @@ Description: Parses Machine-Readable Cataloging ('MARC 21') XML
     bounded-memory converter that writes larger collections as 'Parquet'
     datasets, with optional local parallel processing.
 License: MIT + file LICENSE
+URL: https://github.com/larry77/marcxmlr
+BugReports: https://github.com/larry77/marcxmlr/issues
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2

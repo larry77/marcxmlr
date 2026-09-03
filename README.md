@@ -1,6 +1,6 @@
 # marcxmlr
 
-<!-- badges will be added after the public repository and CI workflow exist -->
+[![R-CMD-check](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml)
 
 `marcxmlr` reads MARC 21 XML into R without discarding the structure that
 makes MARC useful. It preserves repeated fields, repeated subfields,
