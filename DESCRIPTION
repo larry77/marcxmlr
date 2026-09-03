@@ -1,0 +1,35 @@
+Package: marcxmlr
+Title: Faithful and Scalable MARCXML Parsing
+Version: 0.1.0
+Authors@R: 
+    person("Lorenzo", "Isella", email = "lorenzo.isella@gmail.com",
+           role = c("aut", "cre"))
+Description: Parses Machine-Readable Cataloging ('MARC 21') XML
+    <https://www.loc.gov/standards/marcxml/> into a canonical tidy long
+    representation while preserving leaders, control fields, data fields,
+    indicators, repeated fields, repeated subfields, and source order.
+    Provides an in-memory reader for manageable catalogues and a
+    bounded-memory converter that writes larger collections as 'Parquet'
+    datasets, with optional local parallel processing.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Depends:
+    R (>= 4.1.0)
+Imports:
+    purrr (>= 1.0.0),
+    stats,
+    tibble (>= 3.0.0),
+    xml2 (>= 1.3.0)
+Suggests:
+    arrow,
+    dplyr,
+    future (>= 1.69.0),
+    future.mirai,
+    futurize,
+    furrr,
+    mori,
+    testthat (>= 3.0.0),
+    XML
+Config/testthat/edition: 3

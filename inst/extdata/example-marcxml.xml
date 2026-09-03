@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<marc:collection
+  xmlns:marc="http://www.loc.gov/MARC21/slim"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.loc.gov/MARC21/slim https://www.loc.gov/standards/marcxml/schema/MARC21slim.xsd">
+  <marc:record>
+    <marc:leader>00000nam a2200000 i 4500</marc:leader>
+    <marc:controlfield tag="001">demo-1</marc:controlfield>
+    <marc:controlfield tag="008">260101s2026    xx            000 0 eng d</marc:controlfield>
+    <marc:datafield tag="245" ind1="1" ind2="0">
+      <marc:subfield code="a">Scalable catalogues :</marc:subfield>
+      <marc:subfield code="b">a synthetic example</marc:subfield>
+    </marc:datafield>
+    <marc:datafield tag="650" ind1=" " ind2="0">
+      <marc:subfield code="a">Libraries</marc:subfield>
+      <marc:subfield code="x">Data processing</marc:subfield>
+    </marc:datafield>
+    <marc:datafield tag="650" ind1=" " ind2="0">
+      <marc:subfield code="a">Metadata</marc:subfield>
+    </marc:datafield>
+    <marc:datafield tag="856" ind1="4" ind2="0">
+      <marc:subfield code="u">https://example.org/item/1</marc:subfield>
+      <marc:subfield code="y">Full text</marc:subfield>
+      <marc:subfield code="y">Alternate access</marc:subfield>
+    </marc:datafield>
+  </marc:record>
+  <marc:record>
+    <marc:leader>00000nam a2200000 i 4500</marc:leader>
+    <marc:controlfield tag="001">demo-2</marc:controlfield>
+    <marc:controlfield tag="008">260102s2026    xx            000 0 eng d</marc:controlfield>
+    <marc:datafield tag="100" ind1="1" ind2=" ">
+      <marc:subfield code="a">Example, Ana</marc:subfield>
+      <marc:subfield code="d">1980-</marc:subfield>
+    </marc:datafield>
+    <marc:datafield tag="245" ind1="1" ind2="0">
+      <marc:subfield code="a">Café metadata &amp; reproducible examples</marc:subfield>
+    </marc:datafield>
+    <marc:datafield tag="500" ind1=" " ind2=" ">
+      <marc:subfield code="a">  Leading and trailing spaces are preserved.  </marc:subfield>
+    </marc:datafield>
+  </marc:record>
+</marc:collection>
