@@ -215,6 +215,170 @@ example |>
 `read_marcxml()` first builds the complete XML tree. Its `n_max` argument can
 limit parsing for previews, but does not make XML ingestion itself streaming.
 
+## The canonical 11-column representation
+
+### Why not reproduce the familiar MARC field display?
+
+MARC 21 is highly structured and is often displayed in a form that looks
+tabular, with one field per line. Part of the first record in the bundled
+example could be written in the familiar form:
+
+```text
+245 10 $a Scalable catalogues : $b a synthetic example
+650 #0 $a Libraries $x Data processing
+650 #0 $a Metadata
+856 40 $u https://example.org/item/1 $y Full text $y Alternate access
+```
+
+Here `#` is a conventional display symbol for a blank indicator. It is not the
+character stored in the MARCXML record.
+
+This display is a useful view of a record, but it is not one rectangular data
+table. Records contain repeatable fields, while data fields contain their own
+repeatable subfields. A table with one row per field would therefore have to
+store the subfields in a combined string or a list-column. A table with one
+row per record would need list-columns, numbered columns, or rules for joining
+repeated values. Those choices make filtering, counting, SQL queries, and
+Arrow processing more difficult, and combined strings must later be parsed
+again.
+
+`marcxmlr` instead represents the smallest content-bearing MARC units:
+
+- a leader occupies one row;
+- a control field occupies one row; and
+- each subfield of a data field occupies one row.
+
+The tag, indicators, and identity of a data field are repeated on each of its
+subfield rows. This small amount of deliberate redundancy produces one stable
+table while preserving which subfields belong to the same field. A familiar
+one-row-per-field display can always be derived from it.
+
+### Column definitions
+
+Every result has the following columns, in this order:
+
+| Column | Type | Precise meaning |
+|---|---|---|
+| `record_id` | integer | Positive identity assigned to each record during parsing. It is stable across sequential and parallel execution and is not taken from control field `001`. The original `001`, when present, remains a control-field row. |
+| `field_type` | character | The structural kind of the source element: `leader`, `controlfield`, or `datafield`. |
+| `tag` | character | `LDR` for the leader; otherwise the MARC field tag such as `001`, `245`, or `856`. It is character data so leading zeros are preserved. |
+| `subfield_code` | character | The code of a data-field subfield, such as `a`, `x`, `u`, or `2`. It is `NA` for leaders and control fields, which do not contain subfields. |
+| `value` | character | The leader value, complete control-field value, or individual subfield value. Values are not converted to numbers or dates, and meaningful leading or trailing whitespace is not trimmed. |
+| `field_order` | integer | Identity and source position of a field inside its record. The leader is `0`; variable fields are numbered `1, 2, ...`. All subfield rows belonging to one data field have the same `field_order`. Even when source order is not analytically important, this column is the unambiguous field-instance key. |
+| `field_occurrence` | integer | One-based occurrence of the same field type and tag inside a record. For example, two `650` fields have occurrences `1` and `2`. The value is repeated across all subfields of that field. |
+| `ind1` | character | First indicator value of a data field, stored as character data, including a blank space. In conforming MARC 21 this is one character. It is `NA` for the leader and control fields because indicators do not apply to them. |
+| `ind2` | character | Second indicator of a data field, with the same storage rules as `ind1`. Its interpretation, like that of `ind1`, depends on the field tag. |
+| `subfield_order` | integer | One-based position of a subfield inside its containing data field. It is `NA` for leaders and control fields. |
+| `subfield_occurrence` | integer | One-based occurrence of the same subfield code inside one data field. In the example `856`, the two `$y` subfields have occurrences `1` and `2`. It is `NA` for leaders and control fields. |
+
+The keys needed to distinguish structural units are therefore:
+
+- record: `record_id`;
+- field: `record_id + field_order`; and
+- subfield: `record_id + field_order + subfield_order`.
+
+`field_occurrence` and `subfield_occurrence` are convenient, readable counters
+within those units. They are particularly useful when selecting the first,
+second, or subsequent occurrence of a tag or code.
+
+### Indicators are part of the MARC meaning
+
+`ind1` and `ind2` are character columns rather than numbers. A blank indicator
+is stored as `" "`; it is different from `NA`, which means that indicators do
+not apply to that row. Indicator meanings are defined separately for each MARC
+field and should not be interpreted as a single scale.
+
+For example, in the bundled record:
+
+- `245 10` means that field `245` has first indicator `1` (a title added entry)
+  and second indicator `0` (no initial characters are excluded for filing), as
+  defined for the
+  [MARC 21 title statement](https://www.loc.gov/marc/bibliographic/bd245.html);
+- `856 40` means that field `856` uses HTTP (`ind1 = "4"`) and links to the
+  resource described by the record (`ind2 = "0"`), as defined for
+  [electronic location and access](https://www.loc.gov/marc/bibliographic/bd856.html).
+
+Preserving indicators as data allows catalogue-wide questions such as which
+title-filing conventions or electronic-resource relationships occur in the
+source records.
+
+### Why the long representation is convenient for analysis
+
+The first example record has two separate `650` subject fields. The first has
+subfields `$a` and `$x`; the second has another `$a`. Grouping by
+`field_order` keeps these headings separate while making their content easy to
+summarize:
+
+```r
+subjects <- example |>
+  dplyr::filter(record_id == 1L, tag == "650") |>
+  dplyr::arrange(field_order, subfield_order) |>
+  dplyr::group_by(record_id, field_order, field_occurrence) |>
+  dplyr::summarise(
+    subject = paste(value, collapse = " -- "),
+    .groups = "drop"
+  )
+
+subjects
+#> # A tibble: 2 × 4
+#>   record_id field_order field_occurrence subject
+#>       <int>       <int>            <int> <chr>
+#> 1         1           4                1 Libraries -- Data processing
+#> 2         1           5                2 Metadata
+```
+
+Grouping only by `record_id` and `tag` would incorrectly merge both subject
+fields. The field-instance key prevents that error without requiring nested
+objects or parsing `$a` and `$x` out of a combined string.
+
+Because one data field contributes one row per subfield, counting table rows
+does not necessarily count fields. Actual field counts are obtained by first
+selecting distinct field instances:
+
+```r
+field_counts <- example |>
+  dplyr::filter(field_type == "datafield") |>
+  dplyr::distinct(record_id, field_order, tag, ind1, ind2) |>
+  dplyr::count(tag, name = "fields")
+
+field_counts
+#> # A tibble: 5 × 2
+#>   tag   fields
+#>   <chr>  <int>
+#> 1 100        1
+#> 2 245        2
+#> 3 500        1
+#> 4 650        2
+#> 5 856        1
+```
+
+When the field-level MARC view is desirable, it can be recreated explicitly:
+
+```r
+marc_field_view <- example |>
+  dplyr::filter(record_id == 1L, field_type == "datafield") |>
+  dplyr::arrange(field_order, subfield_order) |>
+  dplyr::group_by(record_id, field_order, tag, ind1, ind2) |>
+  dplyr::summarise(
+    contents = paste0(
+      "$", subfield_code, " ", value,
+      collapse = " "
+    ),
+    .groups = "drop"
+  )
+
+marc_field_view |>
+  dplyr::filter(tag == "856")
+#> # A tibble: 1 × 6
+#>   record_id field_order tag   ind1  ind2  contents
+#>       <int>       <int> <chr> <chr> <chr> <chr>
+#> 1         1           6 856   4     0     $u https://example.org/item/1 ...
+```
+
+The traditional MARC-shaped table is therefore a view that can be derived for
+display. The canonical long representation is retained underneath because it
+is safer and more convenient for analytical work.
+
 ## Large public example: 40,000 GPO records
 
 The U.S. Government Publishing Office (GPO) publishes the complete
@@ -413,28 +577,6 @@ and `futurize` dispatches the `purrr` work through a temporary
 Parallelism is not assumed to be faster. XML reading, serialization, task
 startup, parsing, and Parquet writing have different costs. Benchmark both
 modes on the relevant machine and input.
-
-## Canonical data model
-
-Every result has these columns in this order:
-
-| Column | Type | Meaning |
-|---|---|---|
-| `record_id` | integer | Sequential identity assigned during parsing; distinct from MARC control field `001` |
-| `field_type` | character | `leader`, `controlfield`, or `datafield` |
-| `tag` | character | `LDR` for the leader, otherwise the MARC field tag |
-| `subfield_code` | character | Subfield code; `NA` for leaders and control fields |
-| `value` | character | Textual content, without trimming meaningful whitespace |
-| `field_order` | integer | Position in the source record; the leader is zero |
-| `field_occurrence` | integer | Occurrence of the same field type and tag within the record |
-| `ind1` | character | First data-field indicator; otherwise `NA` |
-| `ind2` | character | Second data-field indicator; otherwise `NA` |
-| `subfield_order` | integer | Position within the containing data field; otherwise `NA` |
-| `subfield_occurrence` | integer | Occurrence of the same subfield code within that data field; otherwise `NA` |
-
-This representation makes repetition and order explicit. It can later be
-reshaped for a particular analysis, but the parser itself does not guess how
-repeated values should be combined.
 
 ## Memory model and failure safety
 
