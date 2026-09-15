@@ -1,3 +1,49 @@
+.ensure_stream_record_namespace <- function(record_text, root_namespace) {
+  # XML::saveXML() serializes a branch independently from its collection.
+  # For the common MARCXML case, the record therefore loses the default
+  # namespace inherited from <collection>. Avoid the more general regex-based
+  # repair when we can restore that one known declaration directly.
+  #
+  # This is deliberately conservative. Anything other than an ordinary,
+  # unprefixed <record ...> in the official MARC21 namespace is delegated to
+  # the existing generic helper so its diagnostics and edge-case behaviour
+  # remain authoritative.
+  if (
+    identical(root_namespace, .marcxml_namespace) &&
+      is.character(record_text) &&
+      length(record_text) == 1L &&
+      !is.na(record_text) &&
+      startsWith(record_text, "<record")
+  ) {
+    next_character <- substring(record_text, 8L, 8L)
+    ordinary_start <- next_character %in% c(
+      ">", " ", "\t", "\r", "\n"
+    )
+
+    # Search the complete serialized record rather than parsing the opening
+    # tag in R. A namespace declaration anywhere makes us fall back to the
+    # generic implementation. This can miss an optimization in unusual input,
+    # but it cannot introduce a duplicate namespace declaration.
+    opening_end <- regexpr(">", record_text, fixed = TRUE)[[1L]]
+
+    if (ordinary_start && opening_end > 0L) {
+      opening_tag <- substr(record_text, 1L, opening_end)
+
+      if (!grepl("xmlns", opening_tag, fixed = TRUE)) {
+        return(paste0(
+          substr(record_text, 1L, opening_end - 1L),
+          " xmlns=\"",
+          root_namespace,
+          "\"",
+          substring(record_text, opening_end)
+        ))
+      }
+    }
+  }
+
+  .ensure_record_namespace(record_text, root_namespace)
+}
+
 .marcxml_task_indices <- function(record_count, chunk_records) {
   starts <- seq.int(1L, record_count, by = chunk_records)
 
@@ -350,7 +396,7 @@ marcxml_to_parquet <- function(
       indent = FALSE,
       prefix = character()
     )
-    record_text <- .ensure_record_namespace(
+    record_text <- .ensure_stream_record_namespace(
       record_text,
       state$root_namespace
     )
