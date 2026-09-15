@@ -3,6 +3,7 @@
 #include <R_ext/Rdynload.h>
 #include <R_ext/Visibility.h>
 #include <libxml/parser.h>
+#include <libxml/xmlerror.h>
 #include <libxml/tree.h>
 #include <limits.h>
 #include <stdint.h>
@@ -194,7 +195,8 @@ static SEXP parse_body(void *data) {
         state->docs[i] = xmlCtxtReadMemory(state->parser, text, (int)len,
             NULL, NULL, XML_PARSE_NOBLANKS | XML_PARSE_NONET |
             XML_PARSE_NOERROR | XML_PARSE_NOWARNING);
-        int issue = state->parser->lastError.code;
+        const xmlError *last_error = xmlCtxtGetLastError(state->parser);
+        int issue = last_error != NULL && last_error->code != XML_ERR_OK;
         xmlFreeParserCtxt(state->parser);
         state->parser = NULL;
         R_xlen_t rows;
