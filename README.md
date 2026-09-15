@@ -1,6 +1,9 @@
 # marcxmlr
 
 [![R-CMD-check](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml)
+[![CRAN status](https://www.r-pkg.org/badges/version/marcxmlr)](https://CRAN.R-project.org/package=marcxmlr)
+
+Current CRAN release: **0.1.0**
 
 `marcxmlr` reads MARC 21 XML into R without discarding the structure that
 makes MARC useful. It preserves repeated fields, repeated subfields,
@@ -86,7 +89,13 @@ XML framework, catalogue system, or bibliometric-analysis suite.
 
 ## Installation
 
-Install the development version from GitHub with
+Install the current release from CRAN:
+
+```r
+install.packages("marcxmlr")
+```
+
+The development version can be installed from GitHub with
 [`remotes`](https://remotes.r-lib.org/):
 
 ```r
