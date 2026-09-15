@@ -31,6 +31,12 @@ else
         curl -sfL "https://autobrew.github.io/scripts/libxml2" > autobrew
         if [ $? -eq 0 ]; then
           . ./autobrew
+          # autobrew provides a static libxml2 on macOS. On current ARM64
+          # runners that archive also needs libiconv at link time.
+          case " $PKG_LIBS " in
+            *" -liconv "*) ;;
+            *) PKG_LIBS="$PKG_LIBS -liconv" ;;
+          esac
         fi
         rm -f autobrew
       fi
