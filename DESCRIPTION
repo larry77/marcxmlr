@@ -1,6 +1,6 @@
 Package: marcxmlr
 Title: Faithful and Scalable MARCXML Parsing
-Version: 0.1.0
+Version: 0.1.0.9000
 Authors@R: 
     person("Lorenzo", "Isella", email = "lorenzo.isella@gmail.com",
            role = c("aut", "cre"))
@@ -36,3 +36,5 @@ Suggests:
     testthat (>= 3.0.0),
     XML
 Config/testthat/edition: 3
+SystemRequirements: libxml2 (>= 2.9.0)
+NeedsCompilation: yes

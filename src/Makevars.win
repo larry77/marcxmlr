@@ -1,0 +1,27 @@
+PKG_CONFIG_NAME = libxml-2.0
+PKG_CONFIG ?= $(BINPREF)pkg-config
+PKG_LIBS := $(shell $(PKG_CONFIG) --libs $(PKG_CONFIG_NAME))
+STATIC_CFLAGS = -DLIBXML_STATIC
+
+ifneq ($(strip $(PKG_LIBS)),)
+$(info using $(PKG_CONFIG_NAME) from Rtools)
+PKG_CPPFLAGS := $(shell $(PKG_CONFIG) --cflags $(PKG_CONFIG_NAME)) $(STATIC_CFLAGS)
+else
+# Fallback adapted from r-lib/xml2. This covers Rtools40/R 4.1 and other
+# toolchains without an Rtools pkg-config entry by downloading the matching
+# prebuilt r-windows libxml2 bundle at installation time.
+RWINLIB = ../windows/libxml2
+PKG_CPPFLAGS = -I$(RWINLIB)/include -I$(RWINLIB)/include/libxml2 $(STATIC_CFLAGS)
+PKG_LIBS = -L$(RWINLIB)/lib$(subst gcc,,$(COMPILED_BY))$(R_ARCH) -L$(RWINLIB)/lib \
+	-lxml2 -liconv -lz -lws2_32
+endif
+
+all: $(SHLIB)
+
+$(OBJECTS): $(RWINLIB)
+
+$(RWINLIB):
+	"${R_HOME}/bin${R_ARCH_BIN}/Rscript.exe" "../tools/winlibs.R"
+
+clean:
+	rm -f $(SHLIB) $(OBJECTS)

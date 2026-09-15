@@ -5,6 +5,15 @@
 
 Current CRAN release: **0.1.0**
 
+The development version adds native C acceleration while preserving the public
+interfaces and canonical output described below. Installing that version from
+source requires a C toolchain and libxml2 development files (`r-base-dev
+libxml2-dev` on Debian/Ubuntu). Unix configuration can use `xml2-config`,
+`pkg-config`, or explicit include/library paths. Windows source builds use
+Rtools and fall back to the same r-windows libxml2 bundle strategy used by the
+`xml2` package when the Rtools `pkg-config` entry is unavailable. These build
+requirements do not apply to the existing pure-R CRAN release.
+
 `marcxmlr` reads MARC 21 XML into R without discarding the structure that
 makes MARC useful. It preserves repeated fields, repeated subfields,
 indicators, record identity, and source order in a canonical 11-column long
@@ -102,6 +111,12 @@ The development version can be installed from GitHub with
 install.packages("remotes")
 remotes::install_github("larry77/marcxmlr")
 ```
+
+The development version contains compiled code. Source installation therefore
+needs a C compiler and libxml2 development headers/libraries. On common Linux
+systems the packages are `libxml2-dev` (Debian/Ubuntu) or `libxml2-devel`
+(Fedora/RHEL). Windows source builds use Rtools and include a fallback for
+Rtools versions without a usable libxml2 `pkg-config` entry.
 
 The in-memory reader uses the package's core dependencies. The streaming
 workflow additionally requires `XML` and `arrow`:

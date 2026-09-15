@@ -1,0 +1,89 @@
+#!/bin/sh
+# Locate libxml2 for the native MARCXML parser.
+# Detection follows the portable pattern used by the CRAN xml2 package:
+# explicit paths, xml2-config, then pkg-config. On macOS, Apple's legacy
+# /usr/include result is replaced by the same static autobrew fallback used
+# by xml2, avoiding a second incompatible shared libxml2 in R.app.
+
+PKG_CONFIG_NAME="libxml-2.0"
+PKG_TEST_HEADER="<libxml/parser.h>"
+PKG_LIBS="-lxml2"
+
+if [ "$INCLUDE_DIR" ] || [ "$LIB_DIR" ]; then
+  echo "Found INCLUDE_DIR and/or LIB_DIR."
+  if [ "$INCLUDE_DIR" ]; then
+    PKG_CFLAGS="-I$INCLUDE_DIR $PKG_CFLAGS"
+  fi
+  if [ "$LIB_DIR" ]; then
+    PKG_LIBS="-L$LIB_DIR $PKG_LIBS"
+  fi
+else
+  if command -v xml2-config >/dev/null 2>&1 && xml2-config --version >/dev/null 2>&1; then
+    DETECTED_CFLAGS=`xml2-config --cflags`
+    DETECTED_LIBS=`xml2-config --libs`
+
+    # Current xml2 uses a private static build for the problematic legacy
+    # Apple /usr/include result. Reuse that established package-build path.
+    if [ "`uname`" = "Darwin" ] && echo "$DETECTED_CFLAGS" | grep -sq "/usr/include$"; then
+      unset DETECTED_CFLAGS
+      unset DETECTED_LIBS
+      if command -v curl >/dev/null 2>&1; then
+        curl -sfL "https://autobrew.github.io/scripts/libxml2" > autobrew
+        if [ $? -eq 0 ]; then
+          . ./autobrew
+        fi
+        rm -f autobrew
+      fi
+    fi
+  elif command -v pkg-config >/dev/null 2>&1 && pkg-config --version >/dev/null 2>&1; then
+    DETECTED_CFLAGS=`pkg-config --cflags "$PKG_CONFIG_NAME" 2>/dev/null`
+    DETECTED_LIBS=`pkg-config --libs "$PKG_CONFIG_NAME" 2>/dev/null`
+  fi
+
+  if [ "$DETECTED_CFLAGS" ] || [ "$DETECTED_LIBS" ]; then
+    PKG_CFLAGS="$DETECTED_CFLAGS"
+    PKG_LIBS="$DETECTED_LIBS"
+  fi
+fi
+
+CC=`"${R_HOME}/bin/R" CMD config CC`
+CFLAGS=`"${R_HOME}/bin/R" CMD config CFLAGS`
+CPPFLAGS=`"${R_HOME}/bin/R" CMD config CPPFLAGS`
+
+echo "Using PKG_CFLAGS=$PKG_CFLAGS"
+echo "Using PKG_LIBS=$PKG_LIBS"
+
+# Verify both the headers and the minimum libxml2 API promised in DESCRIPTION.
+cat > conftest.c <<'EOF_TEST'
+#include <libxml/xmlversion.h>
+#include <libxml/parser.h>
+#if LIBXML_VERSION < 20900
+#error marcxmlr requires libxml2 >= 2.9.0
+#endif
+int main(void) { xmlParserCtxtPtr p = xmlNewParserCtxt(); xmlFreeParserCtxt(p); return 0; }
+EOF_TEST
+
+${CC} ${CPPFLAGS} ${PKG_CFLAGS} ${CFLAGS} conftest.c ${PKG_LIBS} -o conftest >configure.log 2>&1
+status=$?
+rm -f conftest.c conftest conftest.exe
+
+if [ $status -ne 0 ]; then
+  echo "------------------------- CONFIGURE ERROR --------------------------"
+  echo "Configuration failed: marcxmlr needs libxml2 >= 2.9.0 headers and libraries."
+  echo "Install libxml2-dev (Debian/Ubuntu) or libxml2-devel (Fedora/RHEL),"
+  echo "or provide explicit paths with:"
+  echo "R CMD INSTALL --configure-vars='INCLUDE_DIR=... LIB_DIR=...'"
+  echo "--------------------------------------------------------------------"
+  cat configure.log
+  exit 1
+fi
+
+# Escape characters meaningful to sed replacement strings.
+escape_sed() {
+  printf '%s' "$1" | sed 's/[\\&|]/\\&/g'
+}
+CFLAGS_ESC=`escape_sed "$PKG_CFLAGS"`
+LIBS_ESC=`escape_sed "$PKG_LIBS"`
+sed -e "s|@cflags@|$CFLAGS_ESC|" -e "s|@libs@|$LIBS_ESC|" src/Makevars.in > src/Makevars
+
+exit 0

@@ -46,9 +46,14 @@ jobs:
       - uses: r-lib/actions/check-r-package@v2
 
   R-minimum:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
 
-    name: ubuntu-22.04 (R 4.1, sequential core)
+    name: ${{ matrix.os }} (R 4.1, sequential core)
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}

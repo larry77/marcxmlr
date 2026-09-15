@@ -1,3 +1,16 @@
+# marcxmlr 0.1.0.9000
+
+* Accelerate record chunks using registered C code and libxml2, applying
+  xmlrectr's direct traversal, preallocation, and hashed occurrence techniques.
+* Preserve both public interfaces, the canonical 11-column output, task and
+  batch boundaries, and the original R parser as the compatibility fallback.
+* Source installation now requires libxml2 development files. Unix
+  configuration accepts `xml2-config`, `pkg-config`, or explicit
+  include/library paths; Windows uses Rtools libxml2 when available and the
+  established r-windows bundle fallback otherwise.
+* Avoid repeated namespace discovery when validating collection children with
+  a prefix-free XPath expression.
+
 # marcxmlr 0.1.0
 
 * Finalized the package author and copyright metadata.

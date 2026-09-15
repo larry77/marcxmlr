@@ -7,3 +7,10 @@
 input/
 output/
 private/
+src/*.o
+src/*.so
+src/*.dll
+/windows/
+/src/Makevars
+
+/configure.log

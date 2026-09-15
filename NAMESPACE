@@ -3,3 +3,4 @@
 export(marcxml_to_parquet)
 export(read_marcxml)
 importFrom(stats,ave)
+useDynLib(marcxmlr, .registration = TRUE)

@@ -15,14 +15,20 @@
   first_record_id,
   compression
 ) {
-  parsed <- purrr::map(task$indices, function(index) {
-    parse_marcxml_record(
-      record = shared_records[[index]],
-      record_id = first_record_id + index - 1L
-    )
-  })
-
-  result <- purrr::list_rbind(parsed)
+  result <- .native_marcxml_records(
+    shared_records,
+    task$indices,
+    first_record_id + task$indices - 1L
+  )
+  if (is.null(result)) {
+    parsed <- purrr::map(task$indices, function(index) {
+      parse_marcxml_record(
+        record = shared_records[[index]],
+        record_id = first_record_id + index - 1L
+      )
+    })
+    result <- purrr::list_rbind(parsed)
+  }
   temporary_path <- paste0(task$path, ".tmp-", Sys.getpid())
 
   on.exit(
@@ -285,13 +291,19 @@ marcxml_to_parquet <- function(
     if (workers > 1L) {
       shared_records <- mori::share(records)
 
+      # Keep the worker call in a locally defined closure. `furrr` discovers
+      # globals required by an anonymous mapping function from that function's
+      # environment; passing the namespace-level task function directly can
+      # omit newly added internal helpers such as `.native_marcxml_records`.
       task_results <- tasks |>
-        purrr::map(
-          .write_marcxml_parquet_task,
-          shared_records = shared_records,
-          first_record_id = first_record_id,
-          compression = compression
-        ) |>
+        purrr::map(function(task) {
+          .write_marcxml_parquet_task(
+            task,
+            shared_records = shared_records,
+            first_record_id = first_record_id,
+            compression = compression
+          )
+        }) |>
         futurize::futurize()
 
       rm(shared_records)
