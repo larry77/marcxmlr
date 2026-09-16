@@ -1,4 +1,9 @@
 .parse_marcxml_text_chunk <- function(record_texts, record_ids) {
+  native <- .native_marcxml_records(record_texts, record_ids)
+  if (!is.null(native)) {
+    return(native)
+  }
+
   parsed <- purrr::map(record_ids, function(record_id) {
     parse_marcxml_record(record_texts[[record_id]], record_id)
   })
@@ -19,7 +24,10 @@
     record_names <- xml2::xml_name(records)
     record_namespaces <- xml2::xml_find_chr(
       records,
-      "namespace-uri(.)"
+      "namespace-uri(.)",
+      # No prefixes occur in this XPath. Automatic xml_ns(records) can scan
+      # the same document repeatedly, once per node in the nodeset.
+      ns = character()
     )
     invalid_records <- record_names != "record" |
       record_namespaces != root_namespace

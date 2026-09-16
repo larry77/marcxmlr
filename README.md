@@ -5,6 +5,16 @@
 
 Current CRAN release: **0.1.0**
 
+The development version adds native C acceleration for record parsing and
+bounded streaming while preserving the public interfaces and canonical output
+described below. Installing that version from source requires a C toolchain and
+libxml2 development files (`r-base-dev
+libxml2-dev` on Debian/Ubuntu). Unix configuration can use `xml2-config`,
+`pkg-config`, or explicit include/library paths. Windows source builds use
+Rtools and fall back to the same r-windows libxml2 bundle strategy used by the
+`xml2` package when the Rtools `pkg-config` entry is unavailable. These build
+requirements do not apply to the existing pure-R CRAN release.
+
 `marcxmlr` reads MARC 21 XML into R without discarding the structure that
 makes MARC useful. It preserves repeated fields, repeated subfields,
 indicators, record identity, and source order in a canonical 11-column long
@@ -77,8 +87,8 @@ problems:
 
 | Tool | Intended role | Difference from `marcxmlr` |
 |---|---|---|
-| [`xml2`](https://xml2.r-lib.org/) | Modern general XML parsing and manipulation in R | Provides the XML tree and XPath machinery, but not MARC field semantics, occurrence columns, or a bounded-memory MARCXML-to-Parquet workflow. `marcxmlr` uses it for record parsing. |
-| [`XML`](https://CRAN.R-project.org/package=XML) | General XML trees, XPath, event parsing, and SAX-style callbacks | Supplies the low-level streaming mechanism used internally by `marcxmlr`; users would otherwise need to implement record buffering, MARC semantics, schema stability, and output publication themselves. |
+| [`xml2`](https://xml2.r-lib.org/) | Modern general XML parsing and manipulation in R | Provides XML trees and XPath machinery, but not MARC field semantics, occurrence columns, or a bounded-memory MARCXML-to-Parquet workflow. `marcxmlr` retains it in its in-memory and reference/fallback parsing paths. |
+| [`XML`](https://CRAN.R-project.org/package=XML) | General XML trees, XPath, event parsing, and SAX-style callbacks | Provides the compatibility streaming path used when the development version's conservative native libxml2 reader declines an input; users would otherwise need to implement record buffering, MARC semantics, schema stability, and output publication themselves. |
 | [`maRc`](https://github.com/davidfuhry/maRc) | Reading and accessing MARCXML records through R6 record and data-field objects | Its documented interface is record-oriented. It does not document the canonical tidy collection representation or bounded-memory Parquet conversion provided here. |
 | [`bibliometrix`](https://CRAN.R-project.org/package=bibliometrix) and [`revtools`](https://CRAN.R-project.org/package=revtools) | Bibliometric analysis and evidence-synthesis workflows | These are downstream tools for scientific-literature data and review workflows, rather than general structure-preserving MARCXML ingestion. |
 | [`data-pond/marc21`](https://github.com/data-pond/marc21) | Node/TypeScript streaming CLI and library for category counts and extraction of selected records | It targets selected extraction and JSON output outside R, rather than a general canonical long table and an Arrow/Parquet analysis workflow in R. |
@@ -102,6 +112,12 @@ The development version can be installed from GitHub with
 install.packages("remotes")
 remotes::install_github("larry77/marcxmlr")
 ```
+
+The development version contains compiled code. Source installation therefore
+needs a C compiler and libxml2 development headers/libraries. On common Linux
+systems the packages are `libxml2-dev` (Debian/Ubuntu) or `libxml2-devel`
+(Fedora/RHEL). Windows source builds use Rtools and include a fallback for
+Rtools versions without a usable libxml2 `pkg-config` entry.
 
 The in-memory reader uses the package's core dependencies. The streaming
 workflow additionally requires `XML` and `arrow`:

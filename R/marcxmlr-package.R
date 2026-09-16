@@ -10,5 +10,6 @@
 #' * <https://www.loc.gov/marc/marcdocz.html>
 #'
 #' @importFrom stats ave
+#' @useDynLib marcxmlr, .registration = TRUE
 #' @keywords internal
 "_PACKAGE"

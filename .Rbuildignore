@@ -4,3 +4,7 @@
 ^cran-comments\.md$
 ^DEVELOPMENT\.md$
 ^\.github$
+^windows$
+^src/Makevars$
+^benchmark-results$
+^configure\.log$

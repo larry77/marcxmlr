@@ -1,3 +1,49 @@
+.ensure_stream_record_namespace <- function(record_text, root_namespace) {
+  # XML::saveXML() serializes a branch independently from its collection.
+  # For the common MARCXML case, the record therefore loses the default
+  # namespace inherited from <collection>. Avoid the more general regex-based
+  # repair when we can restore that one known declaration directly.
+  #
+  # This is deliberately conservative. Anything other than an ordinary,
+  # unprefixed <record ...> in the official MARC21 namespace is delegated to
+  # the existing generic helper so its diagnostics and edge-case behaviour
+  # remain authoritative.
+  if (
+    identical(root_namespace, .marcxml_namespace) &&
+      is.character(record_text) &&
+      length(record_text) == 1L &&
+      !is.na(record_text) &&
+      startsWith(record_text, "<record")
+  ) {
+    next_character <- substring(record_text, 8L, 8L)
+    ordinary_start <- next_character %in% c(
+      ">", " ", "\t", "\r", "\n"
+    )
+
+    # Search the complete serialized record rather than parsing the opening
+    # tag in R. A namespace declaration anywhere makes us fall back to the
+    # generic implementation. This can miss an optimization in unusual input,
+    # but it cannot introduce a duplicate namespace declaration.
+    opening_end <- regexpr(">", record_text, fixed = TRUE)[[1L]]
+
+    if (ordinary_start && opening_end > 0L) {
+      opening_tag <- substr(record_text, 1L, opening_end)
+
+      if (!grepl("xmlns", opening_tag, fixed = TRUE)) {
+        return(paste0(
+          substr(record_text, 1L, opening_end - 1L),
+          " xmlns=\"",
+          root_namespace,
+          "\"",
+          substring(record_text, opening_end)
+        ))
+      }
+    }
+  }
+
+  .ensure_record_namespace(record_text, root_namespace)
+}
+
 .marcxml_task_indices <- function(record_count, chunk_records) {
   starts <- seq.int(1L, record_count, by = chunk_records)
 
@@ -15,14 +61,20 @@
   first_record_id,
   compression
 ) {
-  parsed <- purrr::map(task$indices, function(index) {
-    parse_marcxml_record(
-      record = shared_records[[index]],
-      record_id = first_record_id + index - 1L
-    )
-  })
-
-  result <- purrr::list_rbind(parsed)
+  result <- .native_marcxml_records(
+    shared_records,
+    task$indices,
+    first_record_id + task$indices - 1L
+  )
+  if (is.null(result)) {
+    parsed <- purrr::map(task$indices, function(index) {
+      parse_marcxml_record(
+        record = shared_records[[index]],
+        record_id = first_record_id + index - 1L
+      )
+    })
+    result <- purrr::list_rbind(parsed)
+  }
   temporary_path <- paste0(task$path, ".tmp-", Sys.getpid())
 
   on.exit(
@@ -86,10 +138,13 @@
 #' be read with [read_marcxml()] but is not accepted by this collection
 #' converter.
 #'
-#' Complete records are serialized in the main process before parallel work.
-#' This prevents XML external pointers from crossing process boundaries. With
-#' multiple workers, record strings are exposed through `mori` shared memory,
-#' and `futurize` dispatches `purrr` tasks through a temporary
+#' On supported ordinary collections, a native libxml2 reader first validates
+#' the collection and then serializes complete records in bounded batches. If
+#' that conservative fast path declines the input, the existing `XML`
+#' event-stream implementation is used instead. In either path only complete
+#' record strings cross task boundaries; XML external pointers are never sent
+#' to workers. With multiple workers, record strings are exposed through `mori`
+#' shared memory, and `futurize` dispatches `purrr` tasks through a temporary
 #' `future.mirai` plan. The previous future plan is restored on exit.
 #'
 #' Each task writes a uniquely named temporary file and renames it only after a
@@ -285,13 +340,19 @@ marcxml_to_parquet <- function(
     if (workers > 1L) {
       shared_records <- mori::share(records)
 
+      # Keep the worker call in a locally defined closure. `furrr` discovers
+      # globals required by an anonymous mapping function from that function's
+      # environment; passing the namespace-level task function directly can
+      # omit newly added internal helpers such as `.native_marcxml_records`.
       task_results <- tasks |>
-        purrr::map(
-          .write_marcxml_parquet_task,
-          shared_records = shared_records,
-          first_record_id = first_record_id,
-          compression = compression
-        ) |>
+        purrr::map(function(task) {
+          .write_marcxml_parquet_task(
+            task,
+            shared_records = shared_records,
+            first_record_id = first_record_id,
+            compression = compression
+          )
+        }) |>
         futurize::futurize()
 
       rm(shared_records)
@@ -325,6 +386,20 @@ marcxml_to_parquet <- function(
     invisible(NULL)
   }
 
+  native_streamed <- .native_marcxml_stream(
+    input_file,
+    batch_records,
+    function(records) {
+      record_count <- length(records)
+      state$record_count <- state$record_count + record_count
+      state$batch_size <- record_count
+      state$records <- records
+      flush_batch()
+      invisible(NULL)
+    }
+  )
+
+  if (!native_streamed) {
   record_branch <- function(node) {
     if (!state$seen_root) {
       stop(
@@ -338,7 +413,7 @@ marcxml_to_parquet <- function(
       indent = FALSE,
       prefix = character()
     )
-    record_text <- .ensure_record_namespace(
+    record_text <- .ensure_stream_record_namespace(
       record_text,
       state$root_namespace
     )
@@ -408,6 +483,9 @@ marcxml_to_parquet <- function(
     branches = list(record = record_branch),
     useDotNames = TRUE
   )
+  } else {
+    state$seen_root <- TRUE
+  }
 
   flush_batch()
 

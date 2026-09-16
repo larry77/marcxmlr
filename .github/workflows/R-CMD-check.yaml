@@ -29,7 +29,7 @@ jobs:
       RUN_MARCXML_PARALLEL_TESTS: ${{ matrix.config.parallel_tests }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: r-lib/actions/setup-pandoc@v2
 
@@ -46,9 +46,14 @@ jobs:
       - uses: r-lib/actions/check-r-package@v2
 
   R-minimum:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
 
-    name: ubuntu-22.04 (R 4.1, sequential core)
+    name: ${{ matrix.os }} (R 4.1, sequential core)
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -56,7 +61,7 @@ jobs:
       _R_CHECK_FORCE_SUGGESTS_: "false"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: r-lib/actions/setup-pandoc@v2
 
