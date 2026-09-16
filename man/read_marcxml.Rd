@@ -32,8 +32,10 @@ returns one row for each leader, control field, or data-field subfield. It
 preserves repeated fields, repeated subfields, indicators, and source order.
 }
 \details{
-This function materializes both the XML input and parsed result in memory. Use
-\code{marcxml_to_parquet()} for catalogues that may not fit in memory.
+This function materializes the parsed result in memory. On the supported
+sequential native path it does not build a DOM for the complete XML input;
+compatibility fallbacks may do so. Use \code{marcxml_to_parquet()} for
+catalogues whose canonical result may not fit in memory.
 
 \code{record_id} is positional identity in the selected input and is not
 derived from control field \code{001}. \code{field_order} is zero for the
@@ -44,9 +46,16 @@ Data-field rows carry \code{subfield_order}, the position within the containing
 field, and \code{subfield_occurrence}, the occurrence of that code within the
 same field. Structural columns that do not apply are \code{NA}.
 
-Parallel parsing serializes complete records before dispatch, so \code{xml2}
-external pointers are never sent to workers. The caller's previous future plan
-is restored on exit.
+With \code{workers = 1} and default \code{chunk_records = NULL}, supported
+ordinary input uses a two-pass native
+libxml2 engine: the first pass validates and counts selected records and the
+second fills the canonical columns directly from expanded record nodes. No
+record XML is serialized or reparsed on this path. Unsupported input falls
+back to the reference \code{xml2} implementation.
+
+Parallel parsing retains the established serialized-record implementation.
+XML/libxml2 external pointers are never sent to workers. The caller's previous
+future plan is restored on exit.
 }
 \examples{
 example_file <- system.file(

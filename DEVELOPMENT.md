@@ -65,68 +65,67 @@ no GPL-licensed xmlrectr source was copied into the MIT package.
 - All eleven output columns retain their order, types, missing values, and
   meanings. Field occurrence keys include field type and tag; subfield counters
   reset within each data field. Arbitrary tag/code strings remain supported.
-- `read_marcxml()` keeps its existing R/xml2 ingestion and task semantics.
-  `marcxml_to_parquet()` adds a conservative native libxml2 stream reader for
-  ordinary supported collections. It validates the whole collection before
-  output begins and yields at most `batch_records` serialized record strings at
-  a time. If validation declines the fast path, the existing `XML` event
-  parser, namespace repair and diagnostics run unchanged.
-- Task scheduling, mori sharing, future-plan restoration, Parquet compression,
-  staging and final publication remain in R.
-- The native MARC parser still receives complete owned strings, never xml2 or
-  XML external pointers. Parallel workers therefore continue to receive only
-  serialized record data. The native stream reader's `xmlTextReaderPtr` is
-  owned by the main process and protected by an R external-pointer finalizer.
-- Native parser calls contain at most 256 records, independently of public task
-  and streaming batch sizes. Neither native component retains a whole catalogue
-  DOM or changes the number of Parquet parts.
-- The original record parser is retained unchanged. Native code declines
-  unsupported or invalid structures and any parser warning/error; the entire
-  original task is then evaluated through the existing R path. This preserves
-  validation precedence and purrr's indexed error conditions. It is not a
-  permissive/recovering XML parser.
+- The R/xml2 record parser remains the semantic and diagnostic fallback. Native
+  planning is conservative: unsupported structures are declined rather than
+  interpreted more permissively.
+- `read_marcxml()` uses the direct native two-pass engine only for the default
+  sequential call (`workers = 1`, `chunk_records = NULL`). Explicit chunking and
+  parallel calls retain the established serialized-record implementation.
+- `marcxml_to_parquet()` likewise uses direct bounded canonical batches only for
+  the default sequential call. Explicit `chunk_records` and parallel calls keep
+  the established task/file partitioning path.
+- No xml2/libxml2 external pointer crosses a worker boundary. Parallel workers
+  continue to receive only owned serialized record data.
+- Parquet compression, staging and final publication remain in R/Arrow.
 
-### Bounded native streaming
+### Direct native architecture
 
-For `marcxml_to_parquet()`, the native fast path uses a stateful
-`xmlTextReader`. Before any Parquet part is written, a complete native scan
-checks that the document is a supported MARCXML collection and that every
-record lies inside the same conservative structural subset accepted by the
-native record parser. A failed scan returns control to the existing R/XML
-streaming path rather than replacing its user-facing validation behaviour.
+The direct sequential engine uses two native passes over the XML file. The
+first pass uses `xmlTextReader` to validate the supported MARCXML subset and
+count canonical rows per selected record. The compact plan stores path/mode,
+record counts, total row count and per-record row counts; it retains no XML node
+pointers.
 
-After successful validation the reader is reopened and returns at most
-`batch_records` complete record strings per call. Those strings enter the
-existing parsing, task, parallel-sharing and Parquet-writing code. This keeps
-working memory bounded by the configured batch rather than materialising all
-record strings at once. Per-reader structured error handling is local to the
-owned `xmlTextReader`, so libxml2 parse failures do not escape through another
-package's global handler.
+The second pass reopens the file, uses `xmlTextReaderExpand()` for each record,
+and immediately traverses that expanded node to fill the canonical 11 columns.
+No record is serialized back to XML text and no second record parse occurs.
+The planner and writer share the same structural validator/counter so a plan
+accepted as supported is expected to be writable; the writer additionally
+checks produced row counts against the plan and fails if the input changed.
 
-`options(marcxmlr.native_stream = FALSE)` is an internal developer-only switch
-that disables this streaming fast path while leaving the native MARC record
-parser enabled. `options(marcxmlr.native = FALSE)` disables both native paths
-and exercises the complete reference implementation.
+For `read_marcxml()`, the planned total permits one exact output allocation for
+ordinary catalogues. For `marcxml_to_parquet()`, the second pass allocates only
+`batch_records` records worth of canonical output at a time and writes each
+batch to Arrow/Parquet before continuing. Empty collections still produce one
+empty Parquet part carrying the canonical schema.
 
-On the 40,000-record GPO development sample (2,143,952 canonical rows,
-`batch_records = 5000`, sequential execution), the final bounded implementation
-took 18.4 seconds versus 34.7 seconds for the legacy R/XML streaming front end
-using the same native MARC parser. All eight corresponding Parquet parts were
-`identical()`. A separate-process `/usr/bin/time -v` run measured approximately
-328 MB maximum RSS for bounded native streaming versus 1,097 MB for the legacy
-streaming path. Benchmark results are machine- and input-specific.
+The previous owned-string native parser and bounded record serializer remain
+registered as independent fallback/reference engines. They are also still used
+for explicit chunking and parallel workflows.
 
-A deeper native design remains a separate future experiment, not part of this
-release. A prototype using direct `xmlTextReaderExpand()` traversal counted the
-2,143,952 canonical rows in about 2.2 seconds on the same 40,000-record input,
-close to the approximately 1.9-second native scan lower bound. Exploiting that
-result would require constructing the canonical columns directly from native
-nodes and eliminating record serialization/reparsing, which is a materially
-larger architectural change and should be developed and validated separately.
+Internal developer switches are:
+
+- `options(marcxmlr.native = FALSE)` disables all native paths.
+- `options(marcxmlr.direct = FALSE)` disables the direct in-memory reader while
+  leaving the retained native string parser available.
+- `options(marcxmlr.direct_parquet = FALSE)` disables only the direct Parquet
+  route.
+- `options(marcxmlr.native_stream = FALSE)` disables native streaming, including
+  the direct Parquet route, so tests can force the R/XML event-stream fallback.
+
+On the 40,000-record GPO development sample (2,143,952 canonical rows), the
+standalone architecture used to validate this package port produced full
+canonical parity across every row. The public direct `read_marcxml()` prototype
+completed in about 8.6 seconds versus about 27.7 seconds for the previous native
+path. The direct bounded Parquet prototype completed in about 10.5 seconds with
+roughly 267 MiB maximum RSS versus about 18.4 seconds and 328 MiB for the
+previous bounded native path. These are machine- and input-specific development
+measurements, not general performance guarantees; package-level benchmarks must
+be rerun after integration.
 
 ### Native ownership and builds
 
-`src/marcxml-native.c` registers its .Call entry point, disables dynamic lookup,
+`src/marcxml-native.c` registers its .Call entry points, disables dynamic lookup,
 and requires registered native symbols. It links to system libxml2 without
 accessing xml2's private pointer representation. `R_ExecWithCleanup()` releases
 all owned XML documents, parser contexts, and temporary XML text on ordinary

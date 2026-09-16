@@ -20,9 +20,9 @@ marcxml_to_parquet(
 \item{output_dir}{Path for the new Parquet dataset directory. It must not
 already exist. The directory is published only after successful conversion.}
 
-\item{batch_records}{Maximum number of serialized records retained in a
-batch before parsing and writing. This bounds normal working memory, though
-an unusually large individual record can itself require substantial memory.}
+\item{batch_records}{Maximum number of records converted into one bounded
+canonical batch before writing. This bounds normal working memory, though an
+unusually large individual record can itself require substantial memory.}
 
 \item{workers}{Number of local worker processes. The default, \code{1}, is
 sequential. Values greater than one require the optional parallel
@@ -55,14 +55,18 @@ The input must have a \code{collection} root in the official MARCXML namespace
 be read with \code{\link[=read_marcxml]{read_marcxml()}} but is not accepted by this collection
 converter.
 
-On supported ordinary collections, a native libxml2 reader first validates
-the collection and then serializes complete records in bounded batches. If
-that conservative fast path declines the input, the existing \code{XML}
-event-stream implementation is used instead. In either path only complete
-record strings cross task boundaries; XML external pointers are never sent
-to workers. With multiple workers, record strings are exposed through \code{mori}
-shared memory, and \code{futurize} dispatches \code{purrr} tasks through a temporary
-\code{future.mirai} plan. The previous future plan is restored on exit.
+With \code{workers = 1} and default \code{chunk_records = NULL}, supported
+ordinary collections use a two-pass native libxml2 engine. The first pass
+validates and counts the collection; the second fills bounded canonical batches
+directly from expanded record nodes and writes them with \code{arrow}. No record
+XML is serialized or reparsed on this path.
+
+Unsupported input, explicit \code{chunk_records}, and parallel calls retain the
+established serialized-record/native or \code{XML} event-stream implementations.
+XML/libxml2 external pointers are never sent to workers. With multiple workers,
+record strings are exposed through \code{mori} shared memory, and \code{futurize}
+dispatches \code{purrr} tasks through a temporary \code{future.mirai} plan. The
+previous future plan is restored on exit.
 
 Each task writes a uniquely named temporary file and renames it only after a
 successful Parquet write. All files are first written under a staging

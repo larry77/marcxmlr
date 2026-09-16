@@ -1,5 +1,20 @@
 # marcxmlr 0.1.0.9000
 
+* Add a two-pass direct native libxml2 engine for sequential `read_marcxml()`:
+  the first pass validates/counts records and the second fills the canonical
+  11-column result directly from expanded record nodes, avoiding record XML
+  serialization and reparsing. The established native-string and R parsers
+  remain compatibility fallbacks.
+* Add the same direct-node architecture to the default sequential
+  `marcxml_to_parquet()` path, retaining bounded canonical batches and the
+  existing staging-directory publication semantics. Explicit `chunk_records`
+  and parallel calls continue to use the established worker-safe path.
+* In development tests on the 40,000-record GPO sample (2,143,952 rows), the
+  direct public `read_marcxml()` path completed in about 8.6 seconds versus
+  about 27.7 seconds for the previous native path. The direct Parquet path took
+  about 10.5 seconds with roughly 267 MiB peak RSS versus about 18.4 seconds and
+  328 MiB for the previous bounded native path. These are machine/input-specific
+  development measurements, not performance guarantees.
 * Accelerate record chunks using registered C code and libxml2, applying
   xmlrectr's direct traversal, preallocation, and hashed occurrence techniques.
 * Preserve both public interfaces, the canonical 11-column output, task and
