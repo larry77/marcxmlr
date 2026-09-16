@@ -39,7 +39,20 @@ reference_read <- function(...) {
 }
 
 native_read <- function(...) {
-  old <- options(marcxmlr.native = TRUE)
+  # Keep the pre-direct native parser as an independent regression oracle.
+  old <- options(
+    marcxmlr.native = TRUE,
+    marcxmlr.direct = FALSE
+  )
+  on.exit(options(old))
+  read_marcxml(...)
+}
+
+direct_read <- function(...) {
+  old <- options(
+    marcxmlr.native = TRUE,
+    marcxmlr.direct = TRUE
+  )
   on.exit(options(old))
   read_marcxml(...)
 }

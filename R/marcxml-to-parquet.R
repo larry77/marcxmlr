@@ -104,6 +104,136 @@
   )
 }
 
+.native_marcxml_direct_to_parquet <- function(
+  file,
+  staging_dir,
+  batch_records,
+  compression,
+  verbose
+) {
+  if (!isTRUE(getOption("marcxmlr.native", TRUE)) ||
+      !isTRUE(getOption("marcxmlr.native_stream", TRUE)) ||
+      !isTRUE(getOption("marcxmlr.direct", TRUE)) ||
+      !isTRUE(getOption("marcxmlr.direct_parquet", TRUE))) {
+    return(NULL)
+  }
+
+  plan <- .native_marcxml_plan(
+    file = file,
+    mode = "stream"
+  )
+
+  if (!identical(plan$status, "supported")) {
+    return(NULL)
+  }
+
+  on.exit(
+    .native_marcxml_plan_close(plan),
+    add = TRUE
+  )
+
+  info <- .native_marcxml_plan_info(plan)
+  reader <- .native_marcxml_direct_reader_open(plan)
+
+  on.exit(
+    .native_marcxml_direct_reader_close(reader),
+    add = TRUE
+  )
+
+  record_count <- 0L
+  row_count <- 0
+  batch_count <- 0L
+  part_count <- 0L
+
+  repeat {
+    batch <- .native_marcxml_direct_reader_next(
+      reader,
+      batch_records = batch_records
+    )
+
+    if (is.null(batch)) {
+      break
+    }
+
+    expected_first_record_id <- record_count + 1L
+
+    if (batch$first_record_id != expected_first_record_id) {
+      stop(
+        sprintf(
+          paste0(
+            "Native MARCXML direct reader started a batch at record %s; ",
+            "expected record %s."
+          ),
+          batch$first_record_id,
+          expected_first_record_id
+        ),
+        call. = FALSE
+      )
+    }
+
+    batch_count <- batch_count + 1L
+    part_count <- part_count + 1L
+
+    path <- file.path(
+      staging_dir,
+      sprintf("part-%06d.parquet", part_count)
+    )
+
+    arrow::write_parquet(
+      batch$data,
+      sink = path,
+      compression = compression
+    )
+
+    record_count <- record_count + batch$records
+    row_count <- row_count + nrow(batch$data)
+
+    if (verbose) {
+      message(sprintf(
+        "Processed %s records; wrote %s Parquet file(s).",
+        format(record_count, big.mark = ",", scientific = FALSE),
+        format(part_count, big.mark = ",", scientific = FALSE)
+      ))
+    }
+
+    rm(batch)
+    invisible(gc(verbose = FALSE))
+  }
+
+  if (record_count != info$records_selected ||
+      row_count != info$rows_selected) {
+    stop(
+      sprintf(
+        paste0(
+          "Native MARCXML direct Parquet totals disagree with the plan: ",
+          "planned %s record(s)/%s row(s), produced %s record(s)/%s row(s)."
+        ),
+        info$records_selected,
+        info$rows_selected,
+        record_count,
+        row_count
+      ),
+      call. = FALSE
+    )
+  }
+
+  if (record_count == 0L) {
+    arrow::write_parquet(
+      .empty_marcxml(),
+      sink = file.path(staging_dir, "part-000001.parquet"),
+      compression = compression
+    )
+    part_count <- 1L
+  }
+
+  list(
+    records = record_count,
+    rows = row_count,
+    batches = batch_count,
+    parquet_files = part_count
+  )
+}
+
 #' Convert a MARCXML collection to a Parquet dataset
 #'
 #' `marcxml_to_parquet()` streams complete MARCXML records from a collection,
@@ -114,8 +244,8 @@
 #' @param file Path to a MARCXML collection.
 #' @param output_dir Path for the new Parquet dataset directory. It must not
 #'   already exist. The directory is published only after successful conversion.
-#' @param batch_records Maximum number of serialized records retained in a
-#'   batch before parsing and writing. This bounds normal working memory, though
+#' @param batch_records Maximum number of records converted into one bounded
+#'   canonical batch before writing. This bounds normal working memory, though
 #'   an unusually large individual record can itself require substantial memory.
 #' @param workers Number of local worker processes. The default, `1`, is
 #'   sequential. Values greater than one require the optional parallel
@@ -138,14 +268,18 @@
 #' be read with [read_marcxml()] but is not accepted by this collection
 #' converter.
 #'
-#' On supported ordinary collections, a native libxml2 reader first validates
-#' the collection and then serializes complete records in bounded batches. If
-#' that conservative fast path declines the input, the existing `XML`
-#' event-stream implementation is used instead. In either path only complete
-#' record strings cross task boundaries; XML external pointers are never sent
-#' to workers. With multiple workers, record strings are exposed through `mori`
-#' shared memory, and `futurize` dispatches `purrr` tasks through a temporary
-#' `future.mirai` plan. The previous future plan is restored on exit.
+#' With `workers = 1` and default `chunk_records = NULL`, supported ordinary
+#' collections use a two-pass native libxml2 engine. The first pass validates
+#' and counts the collection; the second fills bounded canonical batches
+#' directly from `xmlTextReaderExpand()` nodes and writes them with `arrow`. No
+#' record XML is serialized or reparsed on this path.
+#'
+#' Unsupported input, explicit `chunk_records`, and parallel calls retain the
+#' established serialized-record/native or `XML` event-stream implementations.
+#' XML/libxml2 external pointers are never sent to workers. With multiple
+#' workers, record strings are exposed through `mori` shared memory, and
+#' `futurize` dispatches `purrr` tasks through a temporary `future.mirai` plan.
+#' The previous future plan is restored on exit.
 #'
 #' Each task writes a uniquely named temporary file and renames it only after a
 #' successful Parquet write. All files are first written under a staging
@@ -286,6 +420,43 @@ marcxml_to_parquet <- function(
     },
     add = TRUE
   )
+
+  # Prefer the direct bounded engine for the default sequential API. Explicit
+  # chunking retains the established task/file partitioning semantics, and
+  # parallel calls retain the current worker-safe serialized-record path.
+  if (workers == 1L && is.null(chunk_records)) {
+    direct_summary <- .native_marcxml_direct_to_parquet(
+      file = input_file,
+      staging_dir = staging_dir,
+      batch_records = batch_records,
+      compression = compression,
+      verbose = verbose
+    )
+
+    if (!is.null(direct_summary)) {
+      if (!file.rename(staging_dir, output_dir)) {
+        stop(
+          sprintf("Could not finalize the dataset directory: %s", output_dir),
+          call. = FALSE
+        )
+      }
+
+      committed <- TRUE
+
+      return(invisible(tibble::tibble(
+        input_file = input_file,
+        output_dir = normalizePath(
+          output_dir,
+          winslash = "/",
+          mustWork = TRUE
+        ),
+        records = direct_summary$records,
+        rows = direct_summary$rows,
+        batches = direct_summary$batches,
+        parquet_files = direct_summary$parquet_files
+      )))
+    }
+  }
 
   if (workers > 1L) {
     old_plan <- future::plan()

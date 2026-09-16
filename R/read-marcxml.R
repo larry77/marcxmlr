@@ -79,8 +79,10 @@
 #' returns one row for each leader, control field, or data-field subfield. It
 #' preserves repeated fields, repeated subfields, indicators, and source order.
 #'
-#' This function materializes both the XML input and the parsed result in
-#' memory. Use [marcxml_to_parquet()] for catalogues that may not fit in memory.
+#' This function materializes the parsed result in memory. On the supported
+#' sequential native path it does not build a DOM for the complete XML input;
+#' compatibility fallbacks may do so. Use [marcxml_to_parquet()] for catalogues
+#' whose canonical result may not fit in memory.
 #'
 #' @param file Path to a MARCXML file.
 #' @param n_max Maximum number of records to parse. Use `Inf` for every record
@@ -108,9 +110,16 @@
 #' within the same field. Structural columns that do not apply to leaders or
 #' control fields are `NA`.
 #'
-#' Parallel parsing serializes complete records before dispatch. `xml2`
-#' external pointers are never sent to worker processes. The caller's previous
-#' future plan is restored when parsing finishes or fails.
+#' With `workers = 1` and default `chunk_records = NULL`, supported ordinary
+#' input uses a two-pass native
+#' libxml2 engine: the first pass validates and counts selected records and the
+#' second fills the canonical columns directly from expanded record nodes. No
+#' record XML is serialized or reparsed on this path. Unsupported input falls
+#' back to the reference `xml2` implementation.
+#'
+#' Parallel parsing retains the established serialized-record implementation.
+#' `xml2`/libxml2 external pointers are never sent to worker processes. The
+#' caller's previous future plan is restored when parsing finishes or fails.
 #'
 #' @examples
 #' example_file <- system.file(
@@ -151,6 +160,22 @@ read_marcxml <- function(
   n_max <- .validate_n_max(n_max)
   workers <- .validate_workers(workers)
   chunk_records <- .validate_chunk_records(chunk_records)
+
+  # Prefer the direct two-pass native engine for sequential reading. The
+  # existing serialized-record/R parser remains authoritative when planning
+  # conservatively declines an input. Parallel calls retain the established
+  # worker-safe path.
+  if (workers == 1L && is.null(chunk_records)) {
+    direct <- .native_marcxml_direct_read(
+      file = file,
+      n_max = n_max
+    )
+
+    if (!is.null(direct)) {
+      return(direct)
+    }
+  }
+
   record_texts <- .extract_marcxml_record_texts(file = file, n_max = n_max)
   record_count <- length(record_texts)
 
