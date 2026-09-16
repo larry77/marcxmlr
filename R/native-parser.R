@@ -35,3 +35,59 @@
 
   if (length(parts) == 1L) parts[[1L]] else .bind_marcxml_results(parts)
 }
+
+
+# Stateful bounded-memory reader for ordinary MARCXML collections. Returning
+# NULL means the unchanged XML-package streaming implementation must be used.
+.native_marcxml_reader_open <- function(file) {
+  if (!isTRUE(getOption("marcxmlr.native", TRUE)) ||
+      !isTRUE(getOption("marcxmlr.native_stream", TRUE))) {
+    return(NULL)
+  }
+
+  .Call(C_marcxml_reader_open, file)
+}
+
+.native_marcxml_reader_next <- function(reader, batch_records) {
+  .Call(
+    C_marcxml_reader_next,
+    reader,
+    as.integer(batch_records)
+  )
+}
+
+.native_marcxml_reader_close <- function(reader) {
+  invisible(.Call(C_marcxml_reader_close, reader))
+}
+
+.native_marcxml_stream <- function(
+  file,
+  batch_records,
+  consume
+) {
+  reader <- .native_marcxml_reader_open(file)
+
+  if (is.null(reader)) {
+    return(FALSE)
+  }
+
+  on.exit(
+    .native_marcxml_reader_close(reader),
+    add = TRUE
+  )
+
+  repeat {
+    records <- .native_marcxml_reader_next(
+      reader,
+      batch_records
+    )
+
+    if (length(records) == 0L) {
+      break
+    }
+
+    consume(records)
+  }
+
+  TRUE
+}

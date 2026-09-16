@@ -5,8 +5,10 @@
 #include <libxml/parser.h>
 #include <libxml/xmlerror.h>
 #include <libxml/tree.h>
+#include <libxml/xmlreader.h>
 #include <limits.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* MARC-specific implementation of xmlrectr's native-engine design:
@@ -87,9 +89,7 @@ static int ignorable(xmlNodePtr node) {
 /* Validate the entire native subset before allocating/filling results.
  * Invalid or unfamiliar input is retried by the reference R implementation;
  * this preserves validation precedence and purrr's indexed errors. */
-static int count_record(xmlDocPtr doc, R_xlen_t *rows) {
-    if (doc->intSubset || doc->extSubset) return 0;
-    xmlNodePtr root = xmlDocGetRootElement(doc);
+static int count_record_node(xmlNodePtr root, R_xlen_t *rows) {
     if (!root || !named(root, "record") || !simple_attributes(root)) return 0;
     const xmlChar *ns = namespace_uri(root);
     if (ns[0] && !xmlStrEqual(ns, BAD_CAST "http://www.loc.gov/MARC21/slim")) return 0;
@@ -130,6 +130,10 @@ static int count_record(xmlDocPtr doc, R_xlen_t *rows) {
         if (*rows > INT_MAX) return 0;
     }
     return leaders == 1;
+}
+static int count_record(xmlDocPtr doc, R_xlen_t *rows) {
+    if (doc->intSubset || doc->extSubset) return 0;
+    return count_record_node(xmlDocGetRootElement(doc), rows);
 }
 
 static size_t table_capacity(R_xlen_t n) {
@@ -274,6 +278,269 @@ static void cleanup(void *data) {
         if (state->docs[i]) xmlFreeDoc(state->docs[i]);
     }
 }
+
+typedef struct {
+    xmlTextReaderPtr reader;
+    int rc;
+} marcxml_reader_state;
+
+static int reader_named(xmlTextReaderPtr reader, const char *name) {
+    const xmlChar *local = xmlTextReaderConstLocalName(reader);
+    return local && xmlStrEqual(local, BAD_CAST name);
+}
+
+static int reader_namespace_ok(xmlTextReaderPtr reader) {
+    const xmlChar *uri = xmlTextReaderConstNamespaceUri(reader);
+    return !uri || !uri[0] ||
+           xmlStrEqual(uri, BAD_CAST "http://www.loc.gov/MARC21/slim");
+}
+
+/* Scan the complete collection before creating the stateful reader.
+ * Returning false declines the native streaming path; the unchanged R/XML
+ * implementation then remains responsible for validation and diagnostics. */
+static int validate_stream_collection(const char *path) {
+    int options = XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING;
+    xmlTextReaderPtr reader = xmlReaderForFile(path, NULL, options);
+    if (!reader) return 0;
+
+    /* xml2 may have installed a global structured-error callback which
+     * longjmps into R. Keep native fast-path validation silent so malformed
+     * or unsupported input can decline cleanly to the reference R/XML path. */
+    xmlTextReaderSetStructuredErrorHandler(
+        reader,
+        quiet_error,
+        NULL
+    );
+
+    int root_seen = 0;
+    int valid = 1;
+    int rc = xmlTextReaderRead(reader);
+
+    while (rc == 1 && valid) {
+        int type = xmlTextReaderNodeType(reader);
+        int depth = xmlTextReaderDepth(reader);
+
+        if (type == XML_READER_TYPE_DOCUMENT_TYPE) {
+            valid = 0;
+            break;
+        }
+
+        if (type == XML_READER_TYPE_ELEMENT && depth == 0) {
+            if (root_seen ||
+                !reader_named(reader, "collection") ||
+                !reader_namespace_ok(reader)) {
+                valid = 0;
+                break;
+            }
+            root_seen = 1;
+        } else if (type == XML_READER_TYPE_ELEMENT && depth == 1) {
+            if (!root_seen || !reader_named(reader, "record")) {
+                valid = 0;
+                break;
+            }
+
+            xmlNodePtr node = xmlTextReaderExpand(reader);
+            R_xlen_t rows = 0;
+            if (!node || !count_record_node(node, &rows)) {
+                valid = 0;
+                break;
+            }
+        }
+
+        rc = xmlTextReaderRead(reader);
+    }
+
+    if (rc < 0 || !root_seen) valid = 0;
+
+    xmlFreeTextReader(reader);
+    return valid;
+}
+
+static SEXP reader_tag(void) {
+    return Rf_install("marcxmlr_native_stream_reader");
+}
+
+static marcxml_reader_state *reader_state(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP ||
+        R_ExternalPtrTag(ext) != reader_tag()) {
+        Rf_error("Invalid native MARCXML reader.");
+    }
+
+    marcxml_reader_state *state =
+        (marcxml_reader_state *)R_ExternalPtrAddr(ext);
+
+    if (!state) Rf_error("Native MARCXML reader is closed.");
+    return state;
+}
+
+static void reader_finalizer(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP) return;
+
+    marcxml_reader_state *state =
+        (marcxml_reader_state *)R_ExternalPtrAddr(ext);
+
+    if (!state) return;
+
+    if (state->reader) {
+        xmlFreeTextReader(state->reader);
+        state->reader = NULL;
+    }
+
+    free(state);
+    R_ClearExternalPtr(ext);
+}
+
+SEXP C_marcxml_reader_open(SEXP path) {
+    if (TYPEOF(path) != STRSXP ||
+        XLENGTH(path) != 1 ||
+        STRING_ELT(path, 0) == NA_STRING) {
+        Rf_error("Invalid native MARCXML reader path.");
+    }
+
+    const char *file =
+        Rf_translateCharUTF8(STRING_ELT(path, 0));
+
+    if (!validate_stream_collection(file)) {
+        return R_NilValue;
+    }
+
+    int options =
+        XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING;
+
+    xmlTextReaderPtr reader =
+        xmlReaderForFile(file, NULL, options);
+
+    if (!reader) return R_NilValue;
+
+    /* Keep this owned reader independent of xml2's global error callback.
+     * Validation already succeeded, but this also prevents later reader
+     * failures from escaping through the global callback. */
+    xmlTextReaderSetStructuredErrorHandler(
+        reader,
+        quiet_error,
+        NULL
+    );
+
+    marcxml_reader_state *state =
+        (marcxml_reader_state *)calloc(
+            1,
+            sizeof(marcxml_reader_state)
+        );
+
+    if (!state) {
+        xmlFreeTextReader(reader);
+        Rf_error("Could not allocate a native MARCXML reader.");
+    }
+
+    state->reader = reader;
+    state->rc = xmlTextReaderRead(reader);
+
+    if (state->rc != 1) {
+        xmlFreeTextReader(reader);
+        free(state);
+        return R_NilValue;
+    }
+
+    SEXP ext = PROTECT(
+        R_MakeExternalPtr(
+            state,
+            reader_tag(),
+            R_NilValue
+        )
+    );
+
+    R_RegisterCFinalizerEx(
+        ext,
+        reader_finalizer,
+        TRUE
+    );
+
+    UNPROTECT(1);
+    return ext;
+}
+
+SEXP C_marcxml_reader_next(SEXP ext, SEXP maximum) {
+    marcxml_reader_state *state = reader_state(ext);
+
+    if (TYPEOF(maximum) != INTSXP ||
+        XLENGTH(maximum) != 1 ||
+        INTEGER(maximum)[0] < 1) {
+        Rf_error("Invalid native MARCXML reader batch size.");
+    }
+
+    int limit = INTEGER(maximum)[0];
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, limit));
+    int count = 0;
+
+    while (state->rc == 1 && count < limit) {
+        int type = xmlTextReaderNodeType(state->reader);
+        int depth = xmlTextReaderDepth(state->reader);
+
+        if (type == XML_READER_TYPE_ELEMENT && depth == 1) {
+            if (!reader_named(state->reader, "record")) {
+                UNPROTECT(1);
+                Rf_error(
+                    "Native MARCXML input changed after validation."
+                );
+            }
+
+            xmlChar *outer =
+                xmlTextReaderReadOuterXml(state->reader);
+
+            if (!outer) {
+                UNPROTECT(1);
+                Rf_error(
+                    "Could not serialize a MARCXML record."
+                );
+            }
+
+            SET_STRING_ELT(
+                out,
+                count,
+                utf8(outer)
+            );
+            xmlFree(outer);
+            ++count;
+
+            state->rc =
+                xmlTextReaderNext(state->reader);
+
+            continue;
+        }
+
+        state->rc =
+            xmlTextReaderRead(state->reader);
+    }
+
+    if (state->rc < 0) {
+        UNPROTECT(1);
+        Rf_error(
+            "Native MARCXML reader failed after validation."
+        );
+    }
+
+    if (count == limit) {
+        UNPROTECT(1);
+        return out;
+    }
+
+    SEXP trimmed =
+        PROTECT(Rf_lengthgets(out, count));
+
+    UNPROTECT(2);
+    return trimmed;
+}
+
+SEXP C_marcxml_reader_close(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP ||
+        R_ExternalPtrTag(ext) != reader_tag()) {
+        Rf_error("Invalid native MARCXML reader.");
+    }
+
+    reader_finalizer(ext);
+    return R_NilValue;
+}
+
 SEXP C_marcxml_parse_records(SEXP texts, SEXP ids) {
     if (TYPEOF(texts) != STRSXP || TYPEOF(ids) != INTSXP ||
         XLENGTH(texts) != XLENGTH(ids)) Rf_error("Invalid native MARCXML inputs.");
@@ -289,6 +556,9 @@ SEXP C_marcxml_parse_records(SEXP texts, SEXP ids) {
 }
 static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_parse_records", (DL_FUNC)&C_marcxml_parse_records, 2},
+    {"C_marcxml_reader_open", (DL_FUNC)&C_marcxml_reader_open, 1},
+    {"C_marcxml_reader_next", (DL_FUNC)&C_marcxml_reader_next, 2},
+    {"C_marcxml_reader_close", (DL_FUNC)&C_marcxml_reader_close, 1},
     {NULL, NULL, 0}
 };
 void attribute_visible R_init_marcxmlr(DllInfo *dll) {

@@ -138,10 +138,13 @@
 #' be read with [read_marcxml()] but is not accepted by this collection
 #' converter.
 #'
-#' Complete records are serialized in the main process before parallel work.
-#' This prevents XML external pointers from crossing process boundaries. With
-#' multiple workers, record strings are exposed through `mori` shared memory,
-#' and `futurize` dispatches `purrr` tasks through a temporary
+#' On supported ordinary collections, a native libxml2 reader first validates
+#' the collection and then serializes complete records in bounded batches. If
+#' that conservative fast path declines the input, the existing `XML`
+#' event-stream implementation is used instead. In either path only complete
+#' record strings cross task boundaries; XML external pointers are never sent
+#' to workers. With multiple workers, record strings are exposed through `mori`
+#' shared memory, and `futurize` dispatches `purrr` tasks through a temporary
 #' `future.mirai` plan. The previous future plan is restored on exit.
 #'
 #' Each task writes a uniquely named temporary file and renames it only after a
@@ -383,6 +386,20 @@ marcxml_to_parquet <- function(
     invisible(NULL)
   }
 
+  native_streamed <- .native_marcxml_stream(
+    input_file,
+    batch_records,
+    function(records) {
+      record_count <- length(records)
+      state$record_count <- state$record_count + record_count
+      state$batch_size <- record_count
+      state$records <- records
+      flush_batch()
+      invisible(NULL)
+    }
+  )
+
+  if (!native_streamed) {
   record_branch <- function(node) {
     if (!state$seen_root) {
       stop(
@@ -466,6 +483,9 @@ marcxml_to_parquet <- function(
     branches = list(record = record_branch),
     useDotNames = TRUE
   )
+  } else {
+    state$seen_root <- TRUE
+  }
 
   flush_batch()
 

@@ -65,18 +65,64 @@ no GPL-licensed xmlrectr source was copied into the MIT package.
 - All eleven output columns retain their order, types, missing values, and
   meanings. Field occurrence keys include field type and tag; subfield counters
   reset within each data field. Arbitrary tag/code strings remain supported.
-- The existing file reader, record serialization, namespace repair, n_max
-  selection, task scheduling, mori sharing, future-plan restoration, SAX
-  buffering, Parquet compression, staging and final publication stay in R.
-- Native code receives complete owned strings, never xml2 external pointers.
-- Native batches contain at most 256 records, independently of public task and
-  streaming batch sizes. The native parser does not retain a whole catalogue
-  DOM or change the number of Parquet parts.
+- `read_marcxml()` keeps its existing R/xml2 ingestion and task semantics.
+  `marcxml_to_parquet()` adds a conservative native libxml2 stream reader for
+  ordinary supported collections. It validates the whole collection before
+  output begins and yields at most `batch_records` serialized record strings at
+  a time. If validation declines the fast path, the existing `XML` event
+  parser, namespace repair and diagnostics run unchanged.
+- Task scheduling, mori sharing, future-plan restoration, Parquet compression,
+  staging and final publication remain in R.
+- The native MARC parser still receives complete owned strings, never xml2 or
+  XML external pointers. Parallel workers therefore continue to receive only
+  serialized record data. The native stream reader's `xmlTextReaderPtr` is
+  owned by the main process and protected by an R external-pointer finalizer.
+- Native parser calls contain at most 256 records, independently of public task
+  and streaming batch sizes. Neither native component retains a whole catalogue
+  DOM or changes the number of Parquet parts.
 - The original record parser is retained unchanged. Native code declines
   unsupported or invalid structures and any parser warning/error; the entire
   original task is then evaluated through the existing R path. This preserves
   validation precedence and purrr's indexed error conditions. It is not a
   permissive/recovering XML parser.
+
+### Bounded native streaming
+
+For `marcxml_to_parquet()`, the native fast path uses a stateful
+`xmlTextReader`. Before any Parquet part is written, a complete native scan
+checks that the document is a supported MARCXML collection and that every
+record lies inside the same conservative structural subset accepted by the
+native record parser. A failed scan returns control to the existing R/XML
+streaming path rather than replacing its user-facing validation behaviour.
+
+After successful validation the reader is reopened and returns at most
+`batch_records` complete record strings per call. Those strings enter the
+existing parsing, task, parallel-sharing and Parquet-writing code. This keeps
+working memory bounded by the configured batch rather than materialising all
+record strings at once. Per-reader structured error handling is local to the
+owned `xmlTextReader`, so libxml2 parse failures do not escape through another
+package's global handler.
+
+`options(marcxmlr.native_stream = FALSE)` is an internal developer-only switch
+that disables this streaming fast path while leaving the native MARC record
+parser enabled. `options(marcxmlr.native = FALSE)` disables both native paths
+and exercises the complete reference implementation.
+
+On the 40,000-record GPO development sample (2,143,952 canonical rows,
+`batch_records = 5000`, sequential execution), the final bounded implementation
+took 18.4 seconds versus 34.7 seconds for the legacy R/XML streaming front end
+using the same native MARC parser. All eight corresponding Parquet parts were
+`identical()`. A separate-process `/usr/bin/time -v` run measured approximately
+328 MB maximum RSS for bounded native streaming versus 1,097 MB for the legacy
+streaming path. Benchmark results are machine- and input-specific.
+
+A deeper native design remains a separate future experiment, not part of this
+release. A prototype using direct `xmlTextReaderExpand()` traversal counted the
+2,143,952 canonical rows in about 2.2 seconds on the same 40,000-record input,
+close to the approximately 1.9-second native scan lower bound. Exploiting that
+result would require constructing the canonical columns directly from native
+nodes and eliminating record serialization/reparsing, which is a materially
+larger architectural change and should be developed and validated separately.
 
 ### Native ownership and builds
 
