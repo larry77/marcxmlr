@@ -11,6 +11,12 @@ Install the package from CRAN:
 install.packages("marcxmlr")
 ```
 
+To install the current development version from GitHub:
+
+```r
+remotes::install_github("larry77/marcxmlr")
+```
+
 Then parse a MARCXML file:
 
 ```r
