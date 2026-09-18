@@ -15,14 +15,15 @@ marcxml_to_parquet(
 )
 }
 \arguments{
-\item{file}{Path to a MARCXML collection.}
+\item{file}{One or more MARCXML collection paths, or glob patterns such as
+\code{"catalogue/*.xml"}. Glob matches are processed in sorted order.}
 
 \item{output_dir}{Path for the new Parquet dataset directory. It must not
 already exist. The directory is published only after successful conversion.}
 
 \item{batch_records}{Maximum number of records converted into one bounded
-canonical batch before writing. This bounds normal working memory, though an
-unusually large individual record can itself require substantial memory.}
+canonical batch before writing. This bounds normal working memory, though
+an unusually large individual record can itself require substantial memory.}
 
 \item{workers}{Number of local worker processes. The default, \code{1}, is
 sequential. Values greater than one require the optional parallel
@@ -39,9 +40,11 @@ task. \code{NULL} targets approximately two tasks per worker in each batch.}
 completed batch.}
 }
 \value{
-Invisibly, a one-row tibble containing the normalized input and
-output paths, record and row counts, number of batches, and number of
-Parquet files. Parsed rows remain in the dataset directory.
+Invisibly, a tibble with one row per resolved input file containing
+the normalized input and output paths, record and row counts, number of
+batches, and number of Parquet files. Single-file input therefore retains
+the existing one-row return value. Parsed rows remain in the dataset
+directory.
 }
 \description{
 \code{marcxml_to_parquet()} streams complete MARCXML records from a collection,
@@ -55,18 +58,25 @@ The input must have a \code{collection} root in the official MARCXML namespace
 be read with \code{\link[=read_marcxml]{read_marcxml()}} but is not accepted by this collection
 converter.
 
-With \code{workers = 1} and default \code{chunk_records = NULL}, supported
-ordinary collections use a two-pass native libxml2 engine. The first pass
-validates and counts the collection; the second fills bounded canonical batches
-directly from expanded record nodes and writes them with \code{arrow}. No record
-XML is serialized or reparsed on this path.
+With \code{workers = 1} and default \code{chunk_records = NULL}, supported ordinary
+collections use a two-pass native libxml2 engine. The first pass validates
+and counts the collection; the second fills bounded canonical batches
+directly from \code{xmlTextReaderExpand()} nodes and writes them with \code{arrow}. No
+record XML is serialized or reparsed on this path.
 
-Unsupported input, explicit \code{chunk_records}, and parallel calls retain the
-established serialized-record/native or \code{XML} event-stream implementations.
-XML/libxml2 external pointers are never sent to workers. With multiple workers,
-record strings are exposed through \code{mori} shared memory, and \code{futurize}
-dispatches \code{purrr} tasks through a temporary \code{future.mirai} plan. The
-previous future plan is restored on exit.
+For one input file, unsupported input, explicit \code{chunk_records}, and
+parallel calls retain the established serialized-record/native or \code{XML}
+event-stream implementations.
+
+When \code{file} resolves to multiple files, complete files are the unit of
+parallel work. Each file is parsed by the existing sequential engine and
+writes independent Parquet fragments. Global \code{record_id} values are assigned
+deterministically in resolved file order, regardless of worker completion
+order. XML/libxml2 external pointers are never sent to workers. Explicit
+\code{chunk_records} is not supported for multi-file input.
+
+Parallel work is dispatched through a temporary \code{future.mirai} plan using
+\code{futurize}; the caller's previous future plan is restored on exit.
 
 Each task writes a uniquely named temporary file and renames it only after a
 successful Parquet write. All files are first written under a staging
