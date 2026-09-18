@@ -22,6 +22,7 @@ Depends:
     R (>= 4.1.0)
 Imports:
     purrr (>= 1.0.0),
+    rlang,
     stats,
     tibble (>= 3.0.0),
     xml2 (>= 1.3.0)

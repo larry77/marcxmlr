@@ -109,7 +109,8 @@
   staging_dir,
   batch_records,
   compression,
-  verbose
+  verbose,
+  record_id_offset = 0L
 ) {
   if (!isTRUE(getOption("marcxmlr.native", TRUE)) ||
       !isTRUE(getOption("marcxmlr.native_stream", TRUE)) ||
@@ -179,6 +180,10 @@
       sprintf("part-%06d.parquet", part_count)
     )
 
+    if (record_id_offset > 0L && nrow(batch$data) > 0L) {
+      batch$data$record_id <- batch$data$record_id + record_id_offset
+    }
+
     arrow::write_parquet(
       batch$data,
       sink = path,
@@ -241,7 +246,8 @@
 #' as a directory of Parquet files. It does not construct a DOM for the complete
 #' XML document and does not materialize the complete parsed result in R.
 #'
-#' @param file Path to a MARCXML collection.
+#' @param file One or more MARCXML collection paths, or glob patterns such as
+#'   `"catalogue/*.xml"`. Glob matches are processed in sorted order.
 #' @param output_dir Path for the new Parquet dataset directory. It must not
 #'   already exist. The directory is published only after successful conversion.
 #' @param batch_records Maximum number of records converted into one bounded
@@ -258,9 +264,11 @@
 #' @param verbose Whether to report cumulative records and files after each
 #'   completed batch.
 #'
-#' @return Invisibly, a one-row tibble containing the normalized input and
-#'   output paths, record and row counts, number of batches, and number of
-#'   Parquet files. Parsed rows remain in the dataset directory.
+#' @return Invisibly, a tibble with one row per resolved input file containing
+#'   the normalized input and output paths, record and row counts, number of
+#'   batches, and number of Parquet files. Single-file input therefore retains
+#'   the existing one-row return value. Parsed rows remain in the dataset
+#'   directory.
 #'
 #' @details
 #' The input must have a `collection` root in the official MARCXML namespace
@@ -274,12 +282,19 @@
 #' directly from `xmlTextReaderExpand()` nodes and writes them with `arrow`. No
 #' record XML is serialized or reparsed on this path.
 #'
-#' Unsupported input, explicit `chunk_records`, and parallel calls retain the
-#' established serialized-record/native or `XML` event-stream implementations.
-#' XML/libxml2 external pointers are never sent to workers. With multiple
-#' workers, record strings are exposed through `mori` shared memory, and
-#' `futurize` dispatches `purrr` tasks through a temporary `future.mirai` plan.
-#' The previous future plan is restored on exit.
+#' For one input file, unsupported input, explicit `chunk_records`, and
+#' parallel calls retain the established serialized-record/native or `XML`
+#' event-stream implementations.
+#'
+#' When `file` resolves to multiple files, complete files are the unit of
+#' parallel work. Each file is parsed by the existing sequential engine and
+#' writes independent Parquet fragments. Global `record_id` values are assigned
+#' deterministically in resolved file order, regardless of worker completion
+#' order. XML/libxml2 external pointers are never sent to workers. Explicit
+#' `chunk_records` is not supported for multi-file input.
+#'
+#' Parallel work is dispatched through a temporary `future.mirai` plan using
+#' `futurize`; the caller's previous future plan is restored on exit.
 #'
 #' Each task writes a uniquely named temporary file and renames it only after a
 #' successful Parquet write. All files are first written under a staging
@@ -323,16 +338,7 @@ marcxml_to_parquet <- function(
   compression = "snappy",
   verbose = TRUE
 ) {
-  if (!is.character(file) || length(file) != 1L || is.na(file)) {
-    stop("`file` must be one non-missing path.", call. = FALSE)
-  }
-
-  if (!file.exists(file)) {
-    stop(
-      sprintf("MARCXML file does not exist: %s", file),
-      call. = FALSE
-    )
-  }
+  input_files <- .resolve_marcxml_files(file)
 
   if (!is.character(output_dir) ||
       length(output_dir) != 1L ||
@@ -369,7 +375,45 @@ marcxml_to_parquet <- function(
   }
 
   .require_marcxml_stream_packages(workers)
-  input_file <- normalizePath(file, winslash = "/", mustWork = TRUE)
+
+  if (length(input_files) == 1L && workers > 1L) {
+    rlang::warn(
+      c(
+        "Parallel processing of a single MARCXML file may not improve performance.",
+        "i" = paste0(
+          "The optimized native sequential parser is often very fast, and ",
+          "parallel overhead can outweigh the benefit."
+        ),
+        "i" = paste0(
+          "Benchmark your own workload before relying on `workers > 1` ",
+          "for single-file input."
+        )
+      ),
+      .frequency = "regularly",
+      .frequency_id = "marcxmlr-single-file-parallel"
+    )
+  }
+
+  if (length(input_files) > 1L) {
+    if (!is.null(chunk_records)) {
+      stop(
+        "`chunk_records` is not supported with multiple MARCXML files.",
+        call. = FALSE
+      )
+    }
+
+    return(.marcxml_to_parquet_multiple(
+      input_files = input_files,
+      output_dir = output_dir,
+      batch_records = batch_records,
+      workers = workers,
+      compression = compression,
+      verbose = verbose
+    ))
+  }
+
+  input_file <- input_files[[1L]]
+  record_id_offset <- .marcxml_internal_record_id_offset()
   output_dir <- path.expand(output_dir)
   output_name <- basename(output_dir)
   output_parent <- dirname(output_dir)
@@ -430,7 +474,8 @@ marcxml_to_parquet <- function(
       staging_dir = staging_dir,
       batch_records = batch_records,
       compression = compression,
-      verbose = verbose
+      verbose = verbose,
+      record_id_offset = record_id_offset
     )
 
     if (!is.null(direct_summary)) {
@@ -485,7 +530,9 @@ marcxml_to_parquet <- function(
     }
 
     records <- state$records[seq_len(record_count)]
-    first_record_id <- state$record_count - record_count + 1L
+    first_record_id <- as.integer(
+      record_id_offset + state$record_count - record_count + 1L
+    )
 
     # Release references held by the SAX state before processing the batch.
     state$records <- character(batch_records)
