@@ -3,136 +3,59 @@
 [![R-CMD-check](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml)
 [![CRAN status](https://www.r-pkg.org/badges/version/marcxmlr)](https://CRAN.R-project.org/package=marcxmlr)
 
-Current CRAN release: **0.1.0**
+`marcxmlr` provides faithful, tidy and scalable parsing of MARC 21 XML in R.
 
-The development version adds native C acceleration for record parsing and
-bounded streaming while preserving the public interfaces and canonical output
-described below. Installing that version from source requires a C toolchain and
-libxml2 development files (`r-base-dev
-libxml2-dev` on Debian/Ubuntu). Unix configuration can use `xml2-config`,
-`pkg-config`, or explicit include/library paths. Windows source builds use
-Rtools and fall back to the same r-windows libxml2 bundle strategy used by the
-`xml2` package when the Rtools `pkg-config` entry is unavailable. These build
-requirements do not apply to the existing pure-R CRAN release.
+It preserves repeated fields, repeated subfields, indicators and source order in
+one canonical 11-column long representation. The same representation is used
+whether records are read into memory or converted in bounded batches to an
+Apache Parquet dataset.
 
-`marcxmlr` reads MARC 21 XML into R without discarding the structure that
-makes MARC useful. It preserves repeated fields, repeated subfields,
-indicators, record identity, and source order in a canonical 11-column long
-table.
+Version 0.2.0 substantially changes the implementation underneath that stable
+representation. The main parsing paths now use compiled C code and libxml2
+directly, avoiding several expensive layers of XML serialization, reparsing,
+R-level traversal and repeated allocation.
 
-It provides two deliberately small workflows:
+The package has two public entry points:
 
-- `read_marcxml()` returns an in-memory tibble when the XML document and
-  parsed result fit comfortably in memory.
-- `marcxml_to_parquet()` streams a collection in bounded batches and writes
-  an [Apache Parquet](https://parquet.apache.org/) dataset for catalogues that
-  should not be materialized as one R object.
+* `read_marcxml()` parses MARCXML into an in-memory tibble.
+* `marcxml_to_parquet()` converts one or many MARCXML collections to a
+  bounded-memory Parquet dataset.
 
-Parallel parsing is available but opt-in. The same MARC representation is
-returned regardless of task size or worker count.
-
-## What are MARC 21 and MARCXML?
-
-[MARC](https://www.loc.gov/marc/faq.html#definition) means
-*MAchine-Readable Cataloging*. MARC 21 is a family of communication formats
-used to represent and exchange bibliographic and related information between
-computer systems. It is coordinated by the Library of Congress in cooperation
-with Library and Archives Canada and with input from libraries, library
-networks, and library-system vendors worldwide. MARC data elements underpin
-many library catalogues.
-
-The five MARC 21 formats cover
-[bibliographic](https://www.loc.gov/marc/bibliographic/),
-[authority](https://www.loc.gov/marc/authority/),
-[holdings](https://www.loc.gov/marc/holdings/),
-[classification](https://www.loc.gov/marc/classification/), and
-[community information](https://www.loc.gov/marc/community/) records. MARC 21
-is principally an exchange format: it does not prescribe how a library system
-must store or display its internal data.
-
-A MARC record is ordered and hierarchical. It contains a leader, control
-fields, and data fields. Data fields have two indicators and contain coded
-subfields. Both fields and subfields can repeat, and their order can matter.
-For example, flattening every `650$a` or `856$u` into one value loses
-information about which field occurrence contained it and where it appeared.
-
-[MARCXML](https://www.loc.gov/standards/marcxml/) is the Library of Congress
-XML representation of MARC 21. The
-[MARCXML design](https://www.loc.gov/standards/marcxml/marcxml-design.html)
-represents tags and indicators as attributes and subfields as child elements,
-while retaining the semantics needed for lossless conversion between MARCXML
-and MARC in its ISO 2709 structure. MARCXML is used for complete records,
-metadata exchange and harvesting, transformation, presentation, and analysis.
-
-## Why another R package?
-
-R has good XML and bibliographic software. The missing piece is a focused
-combination of:
-
-1. a documented MARC-aware tabular representation that never silently
-   collapses repeated structure;
-2. explicit field and subfield order and occurrence numbers;
-3. the same representation for both in-memory and bounded-memory ingestion;
-4. optional local parallel parsing without passing XML external pointers to
-   workers; and
-5. direct conversion of a large MARCXML collection into a lazily queryable
-   Parquet dataset.
-
-At the time of writing, the closest R-specific MARCXML project we found is
-`maRc` on GitHub. [CRAN](https://CRAN.R-project.org/web/packages/) provides
-strong generic XML and downstream bibliographic tools; searches of CRAN and
-[Bioconductor](https://bioconductor.org/packages/release/bioc/) did not
-identify this combined ingestion contract. Nearby tools solve different
-problems:
-
-| Tool | Intended role | Difference from `marcxmlr` |
-|---|---|---|
-| [`xml2`](https://xml2.r-lib.org/) | Modern general XML parsing and manipulation in R | Provides XML trees and XPath machinery, but not MARC field semantics, occurrence columns, or a bounded-memory MARCXML-to-Parquet workflow. `marcxmlr` retains it in its in-memory and reference/fallback parsing paths. |
-| [`XML`](https://CRAN.R-project.org/package=XML) | General XML trees, XPath, event parsing, and SAX-style callbacks | Provides the compatibility streaming path used when the development version's conservative native libxml2 reader declines an input; users would otherwise need to implement record buffering, MARC semantics, schema stability, and output publication themselves. |
-| [`maRc`](https://github.com/davidfuhry/maRc) | Reading and accessing MARCXML records through R6 record and data-field objects | Its documented interface is record-oriented. It does not document the canonical tidy collection representation or bounded-memory Parquet conversion provided here. |
-| [`bibliometrix`](https://CRAN.R-project.org/package=bibliometrix) and [`revtools`](https://CRAN.R-project.org/package=revtools) | Bibliometric analysis and evidence-synthesis workflows | These are downstream tools for scientific-literature data and review workflows, rather than general structure-preserving MARCXML ingestion. |
-| [`data-pond/marc21`](https://github.com/data-pond/marc21) | Node/TypeScript streaming CLI and library for category counts and extraction of selected records | It targets selected extraction and JSON output outside R, rather than a general canonical long table and an Arrow/Parquet analysis workflow in R. |
-
-These differences are about scope, not defects in the other projects.
-`marcxmlr` is intentionally a small MARCXML ingestion package, not a generic
-XML framework, catalogue system, or bibliometric-analysis suite.
+For a **single MARCXML file**, start with `workers = 1`. The optimized native
+sequential engine is now fast enough that process startup and coordination can
+cost more than they save. Parallelism is much more useful when a catalogue is
+naturally split across **multiple XML files**: `marcxml_to_parquet()` can process
+complete files concurrently while preserving deterministic global record
+identifiers.
 
 ## Installation
 
-Install the current release from CRAN:
+Install the version currently available from CRAN with:
 
 ```r
 install.packages("marcxmlr")
 ```
 
-The development version can be installed from GitHub with
-[`remotes`](https://remotes.r-lib.org/):
+Install the current GitHub version with:
 
 ```r
 install.packages("remotes")
 remotes::install_github("larry77/marcxmlr")
 ```
 
-The development version contains compiled code. Source installation therefore
-needs a C compiler and libxml2 development headers/libraries. On common Linux
-systems the packages are `libxml2-dev` (Debian/Ubuntu) or `libxml2-devel`
-(Fedora/RHEL). Windows source builds use Rtools and include a fallback for
-Rtools versions without a usable libxml2 `pkg-config` entry.
+Version 0.2.0 contains compiled C code. Building from source requires a C
+toolchain and libxml2 development headers/libraries. On Debian and Ubuntu these
+are normally provided by `r-base-dev` and `libxml2-dev`; Fedora/RHEL use
+`libxml2-devel`. Windows source builds use Rtools.
 
-The in-memory reader uses the package's core dependencies. The streaming
-workflow additionally requires `XML` and `arrow`:
-
-```r
-install.packages(c("XML", "arrow"))
-```
-
-The examples below use `dplyr` for querying and presentation:
+The examples below use `dplyr`, and the bounded Parquet workflow additionally
+uses `XML` and `arrow`:
 
 ```r
-install.packages("dplyr")
+install.packages(c("dplyr", "XML", "arrow"))
 ```
 
-Optional parallel parsing additionally requires:
+Optional parallel execution uses:
 
 ```r
 install.packages(
@@ -140,26 +63,63 @@ install.packages(
 )
 ```
 
-The sequential core supports R 4.1 and later. With the current CRAN release
-of [`mori`](https://CRAN.R-project.org/package=mori), optional parallel parsing
-requires R 4.3 or later.
+The sequential core supports R 4.1 and later. With current dependency versions,
+the optional parallel machinery requires a newer R installation.
 
-## Small real-world example: Library of Congress
+## What are MARC 21 and MARCXML?
 
-The Library of Congress publishes a
-[MARCXML record for Carl Sandburg's *Arithmetic*](https://www.loc.gov/standards/marcxml/Sandburg/sandburg.xml).
+[MARC 21](https://www.loc.gov/marc/) is a family of formats for representing
+and exchanging bibliographic and related metadata. A MARC record is ordered
+and hierarchical: it contains a leader, control fields and data fields. Data
+fields have two indicators and one or more coded subfields.
 
-### Download in a web browser
+Fields can repeat. Subfields can repeat. Their order can matter. A representation
+that simply collapses every occurrence of, for example, `650$a` or `856$u`
+cannot always reconstruct which values belonged to which original field.
 
-The example can be downloaded directly from the
-[Library of Congress MARCXML site](https://www.loc.gov/standards/marcxml/Sandburg/sandburg.xml)
-on Windows, macOS, or Linux. Save the page as `sandburg.xml` inside a
-`data/loc` directory. If the browser displays the XML instead of downloading
-it, use **Save page as** or **Save as**.
+[MARCXML](https://www.loc.gov/standards/marcxml/) is the Library of Congress XML
+representation of MARC 21. Tags and indicators are encoded as attributes and
+subfields as child elements while the MARC record structure is retained.
 
-### Download from a Linux shell
+`marcxmlr` is deliberately narrower than a catalogue system or a general XML
+framework. Its job is to move MARCXML into an analysis-friendly representation
+without silently discarding that structure.
 
-With `curl`:
+## Why version 0.2.0 is much faster
+
+The canonical table itself has not changed. The expensive machinery used to
+produce it has.
+
+The main bottlenecks addressed during the 0.2.0 development cycle were:
+
+1. serializing complete `<record>` elements back to XML text and reparsing them;
+2. repeated XML-tree and XPath traversal from R;
+3. repeated allocation and growth of intermediate R objects;
+4. repeated higher-level work to calculate field and subfield occurrences; and
+5. worker/process overhead in cases where the parser itself had already become
+   very fast.
+
+The optimized native paths move this work closer to libxml2:
+
+* records are traversed directly from libxml2 nodes in compiled C code;
+* output vectors are preallocated and filled directly;
+* field and subfield occurrence counts use native hashed bookkeeping;
+* the sequential reader uses a validation/counting pass followed by direct
+  construction of the canonical result;
+* the Parquet converter uses a bounded native streaming path and fills canonical
+  batches directly before writing them with Arrow.
+
+The previous R/XML implementations remain available as compatibility fallbacks
+for inputs that the conservative native paths decline. XML/libxml2 external
+pointers are never passed between parallel workers.
+
+The result is not a different MARC representation. It is a substantially faster
+way of producing the same one.
+
+## A small real-world example
+
+The Library of Congress publishes a MARCXML record for Carl Sandburg's
+*Arithmetic*:
 
 ```bash
 mkdir -p data/loc
@@ -169,17 +129,7 @@ curl --fail --location \
   --output data/loc/sandburg.xml
 ```
 
-Or with `wget`:
-
-```bash
-mkdir -p data/loc
-
-wget \
-  "https://www.loc.gov/standards/marcxml/Sandburg/sandburg.xml" \
-  -O data/loc/sandburg.xml
-```
-
-Read the complete record into memory:
+Read it into R:
 
 ```r
 library(marcxmlr)
@@ -194,16 +144,10 @@ sandburg |>
     field_order,
     subfield_order
   )
-#> # A tibble: 2 × 4
-#>   subfield_code value                                      field_order subfield_order
-#>   <chr>         <chr>                                            <int>          <int>
-#> 1 a             Arithmetic /                                        12              1
-#> 2 c             Carl Sandburg ; illustrated as an anamorphic...      12              2
 ```
 
-The package also installs a small synthetic, prefixed-namespace collection.
-Unlike a remote example, this file is stable and is therefore used in package
-examples and tests:
+The package also installs a small synthetic collection used in examples and
+tests:
 
 ```r
 example_file <- system.file(
@@ -218,7 +162,7 @@ dim(example)
 #> [1] 18 11
 ```
 
-Repeated subfields remain separate and ordered:
+Repeated subfields remain separate:
 
 ```r
 example |>
@@ -229,16 +173,13 @@ example |>
     subfield_order,
     subfield_occurrence
   )
-#> # A tibble: 3 × 4
-#>   subfield_code value                      subfield_order subfield_occurrence
-#>   <chr>         <chr>                               <int>               <int>
-#> 1 u             https://example.org/item/1              1                   1
-#> 2 y             Full text                               2                   1
-#> 3 y             Alternate access                        3                   2
 ```
 
-`read_marcxml()` first builds the complete XML tree. Its `n_max` argument can
-limit parsing for previews, but does not make XML ingestion itself streaming.
+On the optimized sequential native path, `read_marcxml()` does **not** build a
+DOM for the complete collection. It validates/counts the selected records and
+then fills the canonical output directly. Compatibility fallbacks may use a
+different XML representation. The complete resulting tibble is, however, still
+materialized in R memory.
 
 ## The canonical 11-column representation
 
@@ -404,74 +345,22 @@ The traditional MARC-shaped table is therefore a view that can be derived for
 display. The canonical long representation is retained underneath because it
 is safer and more convenient for analytical work.
 
-## Large public example: 40,000 GPO records
+## Large real-world example: U.S. Government Publishing Office
 
-The U.S. Government Publishing Office (GPO) publishes the complete
-[Catalog of U.S. Government Publications](https://catalog.gpo.gov/) as a
-public [MARCXML repository](https://github.com/usgpo/cataloging-records-all-cgp-marcxml).
-The February 2026 snapshot contains 1,115,162 records split across 28 ZIP
-files, each holding approximately 40,000 records. The split makes one part a
-manageable but realistic integration example.
+The U.S. Government Publishing Office publishes the
+[Catalog of U.S. Government Publications](https://catalog.gpo.gov/) as public
+MARCXML. The February 2026 snapshot used during development was split across 28
+ZIP files of roughly 40,000 records each.
 
-GPO notes that the snapshot contains approximately 3,000 MARCXML validation
-errors. This is useful real-world input: `marcxmlr` preserves and parses the
-MARCXML structure, but it is not a complete MARC content or XSD validator.
+GPO also documents validation problems in the source collection. This makes it
+useful integration data: real catalogues are not necessarily perfectly clean.
+`marcxmlr` is deliberately strict about malformed MARCXML structure and reports
+the input file in which a multi-file conversion fails.
 
-### Download in a web browser
+### One 40,000-record MARCXML file
 
-[Part `00`](https://github.com/usgpo/cataloging-records-all-cgp-marcxml/blob/main/Record_sets/cataloging-records-all-cgp-XML-00.xml.zip)
-can be downloaded manually on Windows, macOS, or Linux:
-
-1. Open the linked GitHub file page.
-2. Select **Download raw file**.
-3. Save the download as `gpo-00.xml.zip` inside a `data/gpo` directory.
-4. Extract the ZIP file using Windows File Explorer, macOS Finder, or another
-   archive manager.
-
-The extracted file is named
-`cataloging-records-all-cgp-XML-00.xml`. The
-[GPO repository](https://github.com/usgpo/cataloging-records-all-cgp-marcxml)
-also provides the other parts and catalogue documentation.
-
-### Download from a Linux shell
-
-The ZIP is stored with Git LFS, so command-line downloads must follow
-redirects. With `curl`:
-
-```bash
-mkdir -p data/gpo
-
-curl --fail --location \
-  "https://github.com/usgpo/cataloging-records-all-cgp-marcxml/raw/refs/heads/main/Record_sets/cataloging-records-all-cgp-XML-00.xml.zip" \
-  --output data/gpo/gpo-00.xml.zip
-
-unzip -j data/gpo/gpo-00.xml.zip -d data/gpo
-```
-
-The equivalent download with `wget` is:
-
-```bash
-mkdir -p data/gpo
-
-wget \
-  "https://github.com/usgpo/cataloging-records-all-cgp-marcxml/raw/refs/heads/main/Record_sets/cataloging-records-all-cgp-XML-00.xml.zip" \
-  -O data/gpo/gpo-00.xml.zip
-
-unzip -j data/gpo/gpo-00.xml.zip -d data/gpo
-```
-
-The extracted input is:
-
-```text
-data/gpo/cataloging-records-all-cgp-XML-00.xml
-```
-
-The repository may later publish a refreshed catalogue. Exact row counts
-below identify the February 2026 snapshot used during development.
-
-### Convert MARCXML to Parquet without holding the catalogue in memory
-
-Choose a new output directory. Existing directories are never overwritten:
+For a single file, the recommended starting point in 0.2.0 is simply sequential
+execution:
 
 ```r
 library(marcxmlr)
@@ -480,83 +369,34 @@ gpo_xml <- paste0(
   "data/gpo/",
   "cataloging-records-all-cgp-XML-00.xml"
 )
+
 gpo_parquet <- "data/gpo/gpo-00-parquet"
-
-stopifnot(
-  file.exists(gpo_xml),
-  !dir.exists(gpo_parquet)
-)
-
-workers <- max(
-  1L,
-  as.integer(future::availableCores()) - 1L
-)
 
 conversion <- marcxml_to_parquet(
   gpo_xml,
   output_dir = gpo_parquet,
-  batch_records = 5000L,
-  workers = workers
+  batch_records = 5000L
 )
 
-conversion |>
-  dplyr::select(records, rows, batches)
-#> # A tibble: 1 × 3
-#>   records    rows batches
-#>     <int>   <dbl>   <int>
-#> 1   40000 2143952       8
+conversion
 ```
 
-`marcxml_to_parquet()` does not return 2,143,952 rows to R. It returns only the
-one-row conversion summary. Complete records are streamed from XML, parsed in
-bounded batches, and written as independent Parquet parts. The number of parts
-depends on `workers`, `batch_records`, and `chunk_records`; it is not a data
-invariant.
+For the February 2026 part `00` used during development, this produced:
 
-Use `workers = 1L` for sequential execution. Parallel workers can improve
-throughput, but they also increase concurrent memory use and should be
-benchmarked on representative files.
+```text
+40,000 records
+2,143,952 canonical rows
+```
 
-### Open and query the Parquet dataset lazily
+The full canonical result is not returned to R. `marcxml_to_parquet()` writes
+bounded batches as Parquet fragments and returns a conversion summary.
 
-[Arrow Datasets](https://arrow.apache.org/docs/r/articles/dataset.html) let R
-query a directory of Parquet files using familiar `dplyr` syntax. Opening the
-dataset reads enough metadata to discover its schema; it does not construct a
-2.1-million-row tibble:
+The resulting directory can be queried lazily with Arrow:
 
 ```r
 gpo <- arrow::open_dataset(gpo_parquet)
 
-names(gpo)
-#>  [1] "record_id"           "field_type"          "tag"
-#>  [4] "subfield_code"       "value"               "field_order"
-#>  [7] "field_occurrence"    "ind1"                "ind2"
-#> [10] "subfield_order"      "subfield_occurrence"
-```
-
-Build a query before calling `collect()`. In this example Arrow performs the
-aggregation against the dataset and only three result rows are brought into R:
-
-```r
-field_type_counts <- gpo |>
-  dplyr::count(field_type, name = "rows") |>
-  dplyr::arrange(field_type) |>
-  dplyr::collect()
-
-field_type_counts
-#> # A tibble: 3 × 2
-#>   field_type       rows
-#>   <chr>            <int>
-#> 1 controlfield    156999
-#> 2 datafield      1946953
-#> 3 leader           40000
-```
-
-A small set of titles can likewise be selected without collecting the full
-canonical table:
-
-```r
-sample_titles <- gpo |>
+gpo |>
   dplyr::filter(
     record_id <= 10L,
     tag == "245",
@@ -564,81 +404,136 @@ sample_titles <- gpo |>
   ) |>
   dplyr::select(record_id, title = value) |>
   dplyr::collect()
-
-sample_titles
 ```
 
-Do not call `collect()` directly on the complete dataset unless the result is
-known to fit in memory. See Arrow's documentation for
-[`open_dataset()`](https://arrow.apache.org/docs/r/reference/open_dataset.html)
-and its guide to
-[working with multi-file datasets](https://arrow.apache.org/docs/r/articles/dataset.html).
+Avoid calling `collect()` on an entire large dataset unless the result is known
+to fit in memory.
 
-## Optional parallel parsing
+### Multiple MARCXML files
 
-Both public functions default to `workers = 1L`. To opt into local parallel
-parsing, use R 4.3 or later and install the optional parallel dependencies:
+Version 0.2.0 allows `marcxml_to_parquet()` to accept an explicit vector of files
+or a glob pattern:
 
 ```r
-workers <- max(
-  1L,
-  as.integer(future::availableCores()) - 1L
+conversion <- marcxml_to_parquet(
+  "data/gpo/cataloging-records-all-cgp-XML-*.xml",
+  output_dir = "data/gpo/gpo-multi-parquet",
+  batch_records = 5000L,
+  workers = 4L
 )
-
-parallel_result <- read_marcxml(
-  example_file,
-  workers = workers
-)
-
-identical(parallel_result, example)
-#> [1] TRUE
 ```
 
-Records are serialized before dispatch so XML external pointers are not passed
-between processes. `mori` exposes the record strings through shared memory,
-and `futurize` dispatches the `purrr` work through a temporary
-`future.mirai` plan. The caller's previous future plan is restored afterward.
+Glob matches are resolved in sorted order. For multi-file input, complete files
+are the unit of parallel work. Each worker internally uses the optimized
+sequential parser.
 
-Parallelism is not assumed to be faster. XML reading, serialization, task
-startup, parsing, and Parquet writing have different costs. Benchmark both
-modes on the relevant machine and input.
+`record_id` remains globally contiguous and deterministic across the entire
+dataset. Worker completion order does not alter the canonical result.
+
+This is the preferred use of parallelism in 0.2.0: parallelize **files**, rather
+than automatically parallelizing the records inside one already-fast native
+parse.
+
+## Performance observed during development
+
+The figures below are development measurements, not performance guarantees.
+They depend on hardware, storage, XML structure, compression and package
+versions.
+
+On the development machine, one 40,000-record GPO file producing 2,143,952
+canonical rows gave approximately:
+
+| Operation | Execution | Elapsed time |
+| --- | --- | ---: |
+| `read_marcxml()` | direct native sequential | 6.5 s |
+| `marcxml_to_parquet()` | native sequential, 5,000-record batches | 8.4 s |
+
+The important practical change is that within-file parallelism is no longer the
+obvious optimization. Once the parsing bottlenecks were moved into C/libxml2,
+the overhead of splitting one XML file among processes can outweigh the parsing
+work itself.
+
+A larger multi-file development run used 27 GPO XML files. The final source
+file in the downloaded snapshot was excluded from this benchmark because it
+contained a malformed MARC data field with no subfield elements:
+
+```text
+1,080,000 records
+67,672,396 canonical rows
+216 Parquet files
+```
+
+Observed elapsed times were approximately:
+
+| File-level workers | Elapsed time |
+| ---: | ---: |
+| 4 | 121.7 s |
+| 7 | 99-100 s |
+
+The 4-worker and 7-worker runs produced byte-identical Parquet fragments in that
+test.
+
+These results illustrate the intended performance model rather than promise a
+specific speedup: use the optimized sequential engine for an individual file;
+use file-level parallelism when a catalogue naturally consists of several
+files.
+
+## Parallelism
+
+Both public functions still accept `workers`.
+
+For both `read_marcxml()` and single-file `marcxml_to_parquet()`, `workers = 1L`
+should normally be tried first. The older worker-safe serialized-record paths
+are retained for compatibility and experimentation. For single-file
+`marcxml_to_parquet()` calls, version 0.2.0 emits a periodic warning when
+multiple workers are requested because parallel execution may be slower.
+
+For multi-file `marcxml_to_parquet()` calls, `workers > 1L` means file-level
+parallelism. This avoids making the fastest native single-file parser pay the
+cost of unnecessary record-level process coordination.
+
+The previous `future` plan is restored after package-managed parallel work.
 
 ## Memory model and failure safety
 
-The two workflows have different memory guarantees:
+The two workflows deliberately have different memory contracts:
 
-| Function | XML ingestion | Parsed result |
-|---|---|---|
-| `read_marcxml()` | Builds the complete XML tree | Returns the complete tibble in memory |
-| `marcxml_to_parquet()` | Streams complete records and buffers at most one configured batch under normal operation | Writes task results to disk and returns only a summary |
+| Function | XML processing | Result |
+| --- | --- | --- |
+| `read_marcxml()` | Direct native parsing on the optimized path; compatibility fallback when needed | Complete canonical tibble in memory |
+| `marcxml_to_parquet()` | Bounded native batches on the optimized path | Parquet dataset on disk plus a small summary |
 
-Bounded memory is not constant memory. An unusually large individual MARC
-record must still fit in memory, and parallel workers increase the amount of
-work held concurrently.
+Bounded memory does not mean constant memory. An unusually large individual
+record must still fit in memory, and multiple file-level workers naturally
+increase concurrent memory use.
 
-Parquet files are first written under a staging directory beside the requested
-output. The completed directory is published only after the entire conversion
-succeeds. Existing output is not silently replaced.
+Parquet output is written under a staging directory beside the requested
+destination. The final dataset directory is published only after the complete
+conversion succeeds. Existing output directories are not silently overwritten.
 
-## Scope of version 0.1.0
+## Scope of version 0.2.0
 
-Version 0.1.0 focuses on faithful MARCXML ingestion. It does not:
+Version 0.2.0 focuses on faithful and scalable MARCXML ingestion. It does not:
 
-- validate every record against the MARCXML XSD or MARC content rules;
-- parse MARC ISO 2709 files;
-- interpret the domain meaning of every MARC tag;
-- silently deduplicate or collapse repeated fields or subfields;
-- impose an application-specific wide representation; or
-- attempt to replace an integrated library system.
+* validate every record against the complete MARCXML XSD or all MARC content
+  rules;
+* parse MARC ISO 2709 files;
+* interpret the domain meaning of every MARC tag and indicator;
+* silently deduplicate or collapse repeated fields or subfields;
+* impose an application-specific wide representation; or
+* attempt to replace an integrated library system.
+
+The canonical representation is intentionally conservative: structural
+information is preserved first, and application-specific analytical views can
+be derived from it afterward.
 
 ## References
 
-- Library of Congress, [MARC standards](https://www.loc.gov/marc/).
-- Library of Congress, [MARC 21 FAQ](https://www.loc.gov/marc/faq.html).
-- Library of Congress, [Understanding MARC Bibliographic](https://www.loc.gov/marc/umb/).
-- Library of Congress, [MARCXML](https://www.loc.gov/standards/marcxml/).
-- Library of Congress, [MARCXML uses and features](https://www.loc.gov/standards/marcxml/marcxml-overview.html).
-- Library of Congress, [MARCXML design considerations](https://www.loc.gov/standards/marcxml/marcxml-design.html).
-- Library of Congress, [MARCXML architecture](https://www.loc.gov/standards/marcxml/marcxml-architecture.html).
-- U.S. Government Publishing Office, [All CGP Records (MARC XML)](https://github.com/usgpo/cataloging-records-all-cgp-marcxml).
-- Apache Arrow for R, [Working with multi-file datasets](https://arrow.apache.org/docs/r/articles/dataset.html).
+* Library of Congress, [MARC standards](https://www.loc.gov/marc/).
+* Library of Congress, [MARCXML](https://www.loc.gov/standards/marcxml/).
+* Library of Congress,
+  [MARCXML design considerations](https://www.loc.gov/standards/marcxml/marcxml-design.html).
+* U.S. Government Publishing Office,
+  [All CGP Records (MARC XML)](https://github.com/usgpo/cataloging-records-all-cgp-marcxml).
+* Apache Arrow for R,
+  [Working with multi-file datasets](https://arrow.apache.org/docs/r/articles/dataset.html).
