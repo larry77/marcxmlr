@@ -333,12 +333,32 @@ orwell |>
   select(record_id, subfield_code, value)
 ```
 
+Output:
+
+```text
+# A tibble: 2 × 3
+  record_id subfield_code value
+      <int> <chr>         <chr>
+1         1 a             Nineteen eighty-four /
+2         1 c             George Orwell.
+```
+
 ### Extract main subject terms
 
 ```r
 orwell |>
   filter(tag == "650", subfield_code == "a") |>
   select(record_id, field_occurrence, value)
+```
+
+Output:
+
+```text
+# A tibble: 2 × 3
+  record_id field_occurrence value
+      <int>            <int> <chr>
+1         1                1 Totalitarianism
+2         1                2 Dystopias.
 ```
 
 ### Keep complete field instances when one subfield matches
@@ -355,10 +375,27 @@ orwell |>
       value == "Totalitarianism"
     )
   ) |>
-  ungroup()
+  ungroup() |>
+  select(
+    record_id,
+    field_order,
+    tag,
+    subfield_code,
+    value
+  )
 ```
 
-The result contains both `$a Totalitarianism` and its associated `$v Fiction.` because they belong to the same `650` occurrence.
+Output:
+
+```text
+# A tibble: 2 × 5
+  record_id field_order tag   subfield_code value
+      <int>       <int> <chr> <chr>         <chr>
+1         1           5 650   a             Totalitarianism
+2         1           5 650   v             Fiction.
+```
+
+The condition matched only `$a Totalitarianism`, but the result contains both that row and its associated `$v Fiction.` because they belong to the same `650` field instance.
 
 ### Render complete data fields for inspection
 
@@ -372,10 +409,25 @@ orwell |>
       collapse = " "
     ),
     .groups = "drop"
-  )
+  ) |>
+  select(record_id, field_order, tag, field)
 ```
 
-This produces an analysis friendly field view without losing the original grouping before the analyst chooses to collapse it.
+Output:
+
+```text
+# A tibble: 6 × 4
+  record_id field_order tag   field
+      <int>       <int> <chr> <chr>
+1         1           2 100   $a Orwell, George, $d 1903-1950.
+2         1           3 245   $a Nineteen eighty-four / $c George Orwell.
+3         1           4 264   $a London : $b Secker & Warburg, $c 1949.
+4         1           5 650   $a Totalitarianism $v Fiction.
+5         1           6 650   $a Dystopias. $v Fiction.
+6         1           7 856   $u https://example.org/1984 $y Full text $y Mirror
+```
+
+This produces a convenient field level view only after the canonical representation has already preserved the original grouping.
 
 ### Derive a simplified table when the analysis permits it
 
@@ -400,6 +452,15 @@ subjects <- orwell |>
   )
 
 left_join(titles, subjects, by = "record_id")
+```
+
+Output:
+
+```text
+# A tibble: 1 × 3
+  record_id title                   subjects
+      <int> <chr>                   <chr>
+1         1 Nineteen eighty-four /  Totalitarianism ; Fiction. | Dystopias. ; Fiction.
 ```
 
 The important asymmetry is:
@@ -434,10 +495,18 @@ sandburg |>
   filter(tag == "245") |>
   select(
     subfield_code,
-    value,
-    field_order,
-    subfield_order
+    value
   )
+```
+
+Output:
+
+```text
+# A tibble: 2 × 2
+  subfield_code value
+  <chr>         <chr>
+1 a             Arithmetic /
+2 c             Carl Sandburg ; illustrated as an anamorphic adventure by Ted Rand.
 ```
 
 The point is not that tag `245` is difficult to extract. The point is that the exact same representation remains safe when fields and subfields repeat in much less convenient records.
@@ -513,6 +582,15 @@ catalogue |>
   count(value, sort = TRUE) |>
   head(20) |>
   collect()
+```
+
+The result is an ordinary tibble with one row for each of the most frequent `650$a` values and a column named `n` containing the count. The actual terms and counts depend on the catalogue being queried.
+
+```text
+# A tibble: up to 20 × 2
+  value                                      n
+  <chr>                                  <int>
+  ...
 ```
 
 `open_dataset()` lets Arrow apply filters, projections, and aggregations before selected results are brought into R.
@@ -665,42 +743,108 @@ A straightforward XML to table implementation in R can accumulate overhead in se
 
 None of these techniques is inherently wrong. They are often excellent choices for ordinary XML work. They become expensive when multiplied by millions of MARC fields and subfields.
 
-The optimized path in `marcxmlr` reduces the number of separate high level operations by doing the repeated structural work inside one native parser.
+There are two useful ways to understand the difference.
+
+### Workflow 1: repeated high level R and XML operations
+
+A conventional high level implementation can let R orchestrate the parsing in many small steps.
+
+R asks the XML library for a set of nodes, receives an R object, performs some work, asks for another set of nodes, receives another object, and continues until the record has been assembled.
+
+Conceptually:
 
 ```text
-Many small high level operations
-
-R
-↓
-XML query
-↓
-small result
-↓
-R
-↓
-XML query
-↓
-small result
-↓
-R
-↓
-... repeated many times
-
-
-marcxmlr native path
-
-R
-↓
-one parsing call
-↓
-compiled C traversal over libxml2 nodes
-↓
-preallocated canonical columns
-↓
-R tibble
+┌──────────────────────┐
+│ R code               │
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ XPath query or       │
+│ XML node traversal   │
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ small result         │
+│ returned to R        │
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ R reshapes, counts,  │
+│ or requests more XML │
+└──────────┬───────────┘
+           ↓
+        repeat
 ```
 
-The goal is not merely to make each individual operation faster. It is to avoid performing millions of unnecessary individual operations in the first place.
+This workflow is attractive because it is expressive and easy to develop. For modest XML documents, it may be entirely appropriate.
+
+Its weakness for catalogue scale MARC rectangling is repetition. If one record contains many fields and subfields, and a catalogue contains hundreds of thousands or millions of records, the number of small queries, temporary objects, function calls, and transitions between R and compiled XML code can become very large.
+
+### Workflow 2: one coarse R call and native MARC traversal
+
+The primary optimized path in `marcxmlr` moves the repeated structural work into one purpose built native parser.
+
+R initiates the operation. Compiled C code then walks the already parsed libxml2 nodes directly, recognizes MARC elements, maintains order and occurrence counters, and fills preallocated output columns. Control returns to R when a much larger unit of useful work has been completed.
+
+Conceptually:
+
+```text
+┌──────────────────────┐
+│ R                    │
+│ one parsing call     │
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ compiled C parser    │
+│ traverses libxml2    │
+│ nodes directly       │
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ tags, indicators,    │
+│ values, order, and   │
+│ occurrences handled  │
+│ during traversal     │
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ preallocated         │
+│ canonical columns    │
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ R tibble             │
+└──────────────────────┘
+```
+
+For this particular task, the second workflow is superior because the work is highly repetitive and the desired output schema is known in advance. The package can avoid millions of small high level operations while still returning the same ordinary R data structure.
+
+The advantage is therefore not simply that C executes individual instructions faster than R. The larger gain comes from changing the granularity of the work.
+
+```text
+Workflow 1
+
+many small requests
+      ↓
+many small returned objects
+      ↓
+many R level transformations
+      ↓
+large accumulated overhead
+
+
+Workflow 2
+
+one coarse request
+      ↓
+one native traversal
+      ↓
+direct construction of canonical columns
+      ↓
+completed R result
+```
+
+The native path is not universally superior for every XML task. General XML tools remain more flexible for arbitrary querying and transformation. It is superior here because `marcxmlr` knows exactly which MARC structures must be preserved and can implement that repeated work as one specialized operation.
 
 ## Direct libxml2 traversal
 
