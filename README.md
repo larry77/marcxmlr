@@ -3,123 +3,455 @@
 [![R-CMD-check](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml)
 [![CRAN status](https://www.r-pkg.org/badges/version/marcxmlr)](https://CRAN.R-project.org/package=marcxmlr)
 
-`marcxmlr` provides faithful, tidy and scalable parsing of MARC 21 XML in R.
+`marcxmlr` reads MARC 21 XML into R **without flattening away the structure that gives MARC its meaning**. It represents leaders, control fields, data fields, indicators, repeated fields, repeated subfields, and source order in a canonical 11-column long table that works naturally with ordinary R tools.
 
-It preserves repeated fields, repeated subfields, indicators and source order in
-one canonical 11-column long representation. The same representation is used
-whether records are read into memory or converted in bounded batches to an
-Apache Parquet dataset.
+The package provides two main workflows:
 
-Version 0.2.0 substantially changes the implementation underneath that stable
-representation. The main parsing paths now use compiled C code and libxml2
-directly, avoiding several expensive layers of XML serialization, reparsing,
-R-level traversal and repeated allocation.
+- `read_marcxml()` parses MARCXML into an in-memory tibble.
+- `marcxml_to_parquet()` converts one or many MARCXML files into a bounded-memory Apache Parquet dataset that can be queried lazily.
 
-The package has two public entry points:
-
-* `read_marcxml()` parses MARCXML into an in-memory tibble.
-* `marcxml_to_parquet()` converts one or many MARCXML collections to a
-  bounded-memory Parquet dataset.
-
-For a **single MARCXML file**, start with `workers = 1`. The optimized native
-sequential engine is now fast enough that process startup and coordination can
-cost more than they save. Parallelism is much more useful when a catalogue is
-naturally split across **multiple XML files**: `marcxml_to_parquet()` can process
-complete files concurrently while preserving deterministic global record
-identifiers.
+The same canonical representation is used in both cases. Small files and catalogue-scale collections therefore have the same semantics.
 
 ## Installation
 
-Install the version currently available from CRAN with:
+Install the CRAN release with:
 
 ```r
 install.packages("marcxmlr")
 ```
 
-Install the current GitHub version with:
+Install the current GitHub release with:
 
 ```r
 install.packages("remotes")
 remotes::install_github("larry77/marcxmlr")
 ```
 
-Version 0.2.0 contains compiled C code. Building from source requires a C
-toolchain and libxml2 development headers/libraries. On Debian and Ubuntu these
-are normally provided by `r-base-dev` and `libxml2-dev`; Fedora/RHEL use
-`libxml2-devel`. Windows source builds use Rtools.
-
-The examples below use `dplyr`, and the bounded Parquet workflow additionally
-uses `XML` and `arrow`:
+The in-memory workflow is intentionally small. The Parquet workflow uses optional dependencies including `XML` and `arrow`, and the examples below use `dplyr` for querying:
 
 ```r
-install.packages(c("dplyr", "XML", "arrow"))
+install.packages(c("XML", "arrow", "dplyr"))
 ```
 
-Optional parallel execution uses:
+Optional parallel execution uses the packages declared in `Suggests`, including `future`, `future.mirai`, `futurize`, `furrr`, and `mori`:
 
 ```r
-install.packages(
-  c("future", "future.mirai", "futurize", "furrr", "mori")
+install.packages(c(
+  "future", "future.mirai", "futurize", "furrr", "mori"
+))
+```
+
+This README documents the current GitHub code. As with any R package, CRAN can briefly lag the repository between releases.
+
+A minimal use looks like this:
+
+```r
+library(marcxmlr)
+
+marc <- read_marcxml("records.xml")
+marc
+```
+
+For a collection that should not be materialized as one R object:
+
+```r
+marcxml_to_parquet(
+  "records.xml",
+  output_dir = "records-parquet"
 )
 ```
 
-The sequential core supports R 4.1 and later. With current dependency versions,
-the optional parallel machinery requires a newer R installation.
+Open the resulting dataset lazily with Arrow:
+
+```r
+library(arrow)
+
+ds <- open_dataset("records-parquet")
+```
+
+The rest of this README explains **why the representation looks the way it does**, how to query it, and—later—how the implementation makes faithful MARC rectangling fast enough for very large catalogues.
+
+---
+
+# Part I — Using and understanding `marcxmlr`
+
+## Why another R package for MARCXML?
+
+R already has excellent general XML software. `xml2` provides modern libxml2 bindings and XPath-based XML manipulation, while `XML` provides tree, XPath, event, and SAX-style facilities. There is also MARC-specific work in R: the `maRc` project, for example, exposes MARCXML records through record-oriented R6 objects.
+
+What has been missing is a focused combination of properties aimed at **data analysis and large-scale metadata work**:
+
+1. a documented MARC-aware rectangular representation that does not silently collapse repeated structure;
+2. explicit preservation of field order, field occurrence, subfield order, subfield occurrence, and indicators;
+3. the same representation for in-memory and bounded-memory ingestion;
+4. direct conversion of large MARCXML collections to Parquet; and
+5. an implementation designed to remain practical on millions of MARC records.
+
+`marcxmlr` is intended to fill that particular gap. It is not a replacement for `xml2` or `XML`; in fact, those packages and libxml2 are part of the ecosystem on which this kind of work depends. Nor is the existence of `marcxmlr` a criticism of record-oriented MARC packages. The design target is different: **a faithful analytical representation of complete MARC collections in R**.
+
+Nearby tools solve different problems:
+
+| Tool | Main role | Difference from `marcxmlr` |
+|---|---|---|
+| `xml2` | General XML parsing and manipulation | Understands XML structure, not MARC field/subfield semantics or the canonical MARC table used here. |
+| `XML` | General XML parsing, XPath, event and streaming interfaces | Supplies powerful low-level XML machinery, but not a MARC-specific analytical contract. |
+| `maRc` | Record-oriented MARCXML access through R6 objects | Provides MARC-aware record access; `marcxmlr` instead focuses on a collection-oriented tidy representation and Parquet-scale workflows. |
+
+The distinction is about **scope**. `marcxmlr` is deliberately narrow: MARCXML in, structurally faithful R/Parquet data out.
+
+## Scope: what `marcxmlr` does—and does not do
+
+`marcxmlr` is a **parser and rectangling package**. Its job is to represent the information and structure present in MARCXML faithfully enough that subsequent analysis does not have to guess what was lost during import.
+
+It deliberately does not try to become a catalogue-management system or a MARC repair engine. In particular, it does not:
+
+- correct malformed or semantically incorrect MARC 21 records;
+- infer missing fields, indicators, or subfields;
+- normalize different cataloguing practices into a common local convention;
+- validate every MARC content rule or coded value;
+- merge duplicate bibliographic records;
+- decide which repeated values should be collapsed for a particular analysis;
+- map the catalogue automatically to another metadata model such as Dublin Core or BIBFRAME; or
+- replace an integrated library system.
+
+The guiding principle is simple: **preserve first, interpret later**.
+
+If a source record is structurally usable, `marcxmlr` aims to represent what is actually there. If the input violates assumptions required for safe parsing, failure is preferable to silently manufacturing a repaired interpretation.
+
+This separation also keeps responsibilities clear:
+
+```text
+MARCXML parsing
+      ↓
+faithful canonical representation
+      ↓
+analysis, selection, reshaping, mapping, validation or transformation
+```
+
+`marcxmlr` concentrates on the first two layers. The third is deliberately left to ordinary R tools and to domain-specific rules chosen by the user.
+
+## Fast enough for real catalogues
+
+Faithfulness is only useful if it remains practical at catalogue scale. `marcxmlr` therefore moves the performance-critical parsing work into compiled C code built directly on libxml2.
+
+A development benchmark on a public U.S. Government Publishing Office MARCXML file containing **40,000 records** produced **2,143,952 canonical rows** in approximately:
+
+| Operation | Workers | Elapsed time |
+|---|---:|---:|
+| `read_marcxml()` | 1 | ~6.5 s |
+| `marcxml_to_parquet()` | 1 | ~8.4 s |
+
+A larger run over **27 GPO MARCXML files**, containing **1,080,000 records** and producing **67,672,396 canonical rows**, completed in about **100 seconds with 7 workers**.
+
+These timings are hardware- and software-dependent; they are scale indicators, not performance guarantees. The important architectural point is that the hot path is not an R loop over millions of XML nodes. MARC traversal, output sizing, occurrence bookkeeping, and construction of the canonical result are handled in native code. Parallelism is then useful primarily where there is genuinely independent work to distribute, especially across multiple input files.
+
+The technical implementation and reproducible benchmark patterns are documented in [Part II](#part-ii--under-the-hood-implementation-and-performance).
 
 ## What are MARC 21 and MARCXML?
 
-[MARC 21](https://www.loc.gov/marc/) is a family of formats for representing
-and exchanging bibliographic and related metadata. A MARC record is ordered
-and hierarchical: it contains a leader, control fields and data fields. Data
-fields have two indicators and one or more coded subfields.
+MARC means **MAchine-Readable Cataloging**. MARC 21 is a family of communication formats used to represent and exchange bibliographic, authority, holdings, classification, and community information in machine-readable form.
 
-Fields can repeat. Subfields can repeat. Their order can matter. A representation
-that simply collapses every occurrence of, for example, `650$a` or `856$u`
-cannot always reconstruct which values belonged to which original field.
+A MARC record is not a conventional rectangular observation with one value for each variable. It is an **ordered structured record**. A bibliographic record may contain:
 
-[MARCXML](https://www.loc.gov/standards/marcxml/) is the Library of Congress XML
-representation of MARC 21. Tags and indicators are encoded as attributes and
-subfields as child elements while the MARC record structure is retained.
+- a leader;
+- control fields such as `001` or `008`;
+- data fields such as `100`, `245`, `264`, `650`, or `856`;
+- two indicators attached to each data field; and
+- an ordered sequence of coded subfields within each data field.
 
-`marcxmlr` is deliberately narrower than a catalogue system or a general XML
-framework. Its job is to move MARCXML into an analysis-friendly representation
-without silently discarding that structure.
+Both fields and subfields can repeat.
 
-## Why version 0.2.0 is much faster
+MARCXML is the Library of Congress XML representation of MARC. In MARCXML, field tags and indicators are attributes, while subfields become child elements carrying their subfield code as an attribute. The MARCXML design is intended to retain MARC semantics and support lossless round-tripping between MARCXML and MARC in its ISO 2709 form.
 
-The canonical table itself has not changed. The expensive machinery used to
-produce it has.
+That property is important for `marcxmlr`: a faithful analytical representation must preserve the same distinctions that make MARCXML lossless.
 
-The main bottlenecks addressed during the 0.2.0 development cycle were:
+## Why MARC 21 is not tabular data
 
-1. serializing complete `<record>` elements back to XML text and reparsing them;
-2. repeated XML-tree and XPath traversal from R;
-3. repeated allocation and growth of intermediate R objects;
-4. repeated higher-level work to calculate field and subfield occurrences; and
-5. worker/process overhead in cases where the parser itself had already become
-   very fast.
+A tempting representation of a bibliographic record is something like:
 
-The optimized native paths move this work closer to libxml2:
+| record_id | title | author | subject |
+|---:|---|---|---|
+| 1 | Nineteen eighty-four | George Orwell | Totalitarianism |
 
-* records are traversed directly from libxml2 nodes in compiled C code;
-* output vectors are preallocated and filled directly;
-* field and subfield occurrence counts use native hashed bookkeeping;
-* the sequential reader uses a validation/counting pass followed by direct
-  construction of the canonical result;
-* the Parquet converter uses a bounded native streaming path and fills canonical
-  batches directly before writing them with Arrow.
+That table may be useful for a specific analysis, but it is **not a general representation of the MARC record**.
 
-The previous R/XML implementations remain available as compatibility fallbacks
-for inputs that the conservative native paths decline. XML/libxml2 external
-pointers are never passed between parallel workers.
+Consider these two MARC subject fields:
 
-The result is not a different MARC representation. It is a substantially faster
-way of producing the same one.
+```text
+650 _0 $a Totalitarianism $v Fiction
+650 _0 $a Politics $x Philosophy
+```
 
-## A small real-world example
+There are two distinct occurrences of field `650`. The first associates `$a Totalitarianism` with `$v Fiction`. The second associates `$a Politics` with `$x Philosophy`.
 
-The Library of Congress publishes a MARCXML record for Carl Sandburg's
-*Arithmetic*:
+If the record is flattened independently by tag and subfield code, we might obtain:
+
+```text
+650$a = "Totalitarianism || Politics"
+650$v = "Fiction"
+650$x = "Philosophy"
+```
+
+The values are still present, but an important relationship has disappeared: **which `$v` or `$x` belonged to which occurrence of field `650`?**
+
+The same problem appears inside a single field when a subfield code repeats:
+
+```text
+700 1_ $a Smith, John $e editor $e translator
+```
+
+The two `$e` values are not duplicates accidentally encountered in the XML. They are two ordered occurrences of the same subfield code inside one specific `700` field instance.
+
+A general-purpose MARC representation therefore has to preserve several levels of identity and order:
+
+```text
+record
+└── field instance
+    ├── field tag
+    ├── indicators
+    ├── position in the record
+    └── ordered subfield instances
+        ├── subfield code
+        ├── value
+        └── occurrence of that code within the field
+```
+
+This is why "one MARC record = one ordinary row" is not a safe starting assumption.
+
+## The canonical 11-column representation
+
+`marcxmlr` solves this by using a long, rectangular representation that **makes MARC structure explicit instead of discarding it**.
+
+Every result contains exactly these columns, in this order:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `record_id` | integer | Sequential identity assigned by `marcxmlr`; distinct from MARC control field `001`. |
+| `field_type` | character | `leader`, `controlfield`, or `datafield`. |
+| `tag` | character | `LDR` for the leader, otherwise the MARC field tag. |
+| `subfield_code` | character | MARC subfield code; `NA` for leaders and control fields. |
+| `value` | character | Textual value, preserving meaningful source content. |
+| `field_order` | integer | Position of the field instance in the source record; the leader is `0`. |
+| `field_occurrence` | integer | Occurrence number of the same field type/tag within the record. |
+| `ind1` | character | First indicator for a data field; otherwise `NA`. |
+| `ind2` | character | Second indicator for a data field; otherwise `NA`. |
+| `subfield_order` | integer | Position of the subfield inside its containing data field; otherwise `NA`. |
+| `subfield_occurrence` | integer | Occurrence number of that subfield code inside that particular field instance; otherwise `NA`. |
+
+### Why these columns are enough
+
+The representation is intentionally redundant in places because the redundancy makes the structure explicit and easy to query.
+
+- `record_id` tells us which MARC record a row belongs to.
+- `field_order` identifies a **specific field instance** within that record and preserves its source position.
+- `field_occurrence` makes repetition of the same tag explicit.
+- `ind1` and `ind2` remain attached to the data-field instance.
+- `subfield_order` preserves the order of subfields inside the field.
+- `subfield_occurrence` distinguishes repeated uses of the same subfield code inside one field.
+
+For data fields, all rows belonging to the same `record_id` + `field_order` combination belong to the same MARC field instance.
+
+That fact is crucial. It means that a table can be rectangular without pretending that MARC itself is flat.
+
+### Semantic equivalence, not naive flattening
+
+MARCXML already expresses the logical MARC record without the low-level byte offsets used by ISO 2709. `marcxmlr` performs another change of representation: from XML hierarchy to explicit relational columns.
+
+The canonical table retains the analytical information needed to distinguish:
+
+- records;
+- leaders and control fields;
+- every data-field instance;
+- repeated field tags;
+- both indicators;
+- every subfield instance;
+- repeated subfield codes; and
+- field and subfield order.
+
+In other words, the MARC hierarchy is **encoded in columns rather than discarded**.
+
+Here, *semantic equivalence* means equivalence of the MARC record structure and values represented by MARCXML, not byte-for-byte reproduction of the XML document. XML declaration details, namespace-prefix spelling, indentation, attribute ordering, comments, and other serialization details are not the analytical contract. The leader, control fields, data-field instances, indicators, subfields, repetition, and ordering are.
+
+This is the package's central design choice. A user can always derive a simpler representation later. Information discarded during import cannot be reconstructed reliably afterward.
+
+## A complete small MARCXML record
+
+Consider this deliberately small but structurally representative MARCXML record:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<record xmlns="http://www.loc.gov/MARC21/slim">
+  <leader>00000cam a2200000 i 4500</leader>
+  <controlfield tag="001">12345</controlfield>
+
+  <datafield tag="100" ind1="1" ind2=" ">
+    <subfield code="a">Orwell, George,</subfield>
+    <subfield code="d">1903-1950.</subfield>
+  </datafield>
+
+  <datafield tag="245" ind1="1" ind2="0">
+    <subfield code="a">Nineteen eighty-four /</subfield>
+    <subfield code="c">George Orwell.</subfield>
+  </datafield>
+
+  <datafield tag="264" ind1=" " ind2="1">
+    <subfield code="a">London :</subfield>
+    <subfield code="b">Secker &amp; Warburg,</subfield>
+    <subfield code="c">1949.</subfield>
+  </datafield>
+
+  <datafield tag="650" ind1=" " ind2="0">
+    <subfield code="a">Totalitarianism</subfield>
+    <subfield code="v">Fiction.</subfield>
+  </datafield>
+
+  <datafield tag="650" ind1=" " ind2="0">
+    <subfield code="a">Dystopias.</subfield>
+    <subfield code="v">Fiction.</subfield>
+  </datafield>
+
+  <datafield tag="856" ind1="4" ind2="0">
+    <subfield code="u">https://example.org/1984</subfield>
+    <subfield code="y">Full text</subfield>
+    <subfield code="y">Mirror</subfield>
+  </datafield>
+</record>
+```
+
+If the file is saved as `orwell.xml`:
+
+```r
+library(marcxmlr)
+
+orwell <- read_marcxml("orwell.xml")
+orwell
+```
+
+Conceptually, the canonical result is:
+
+| record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
+|---:|---|---|---|---|---:|---:|---|---|---:|---:|
+| 1 | leader | LDR | NA | 00000cam a2200000 i 4500 | 0 | 1 | NA | NA | NA | NA |
+| 1 | controlfield | 001 | NA | 12345 | 1 | 1 | NA | NA | NA | NA |
+| 1 | datafield | 100 | a | Orwell, George, | 2 | 1 | 1 | ` ` | 1 | 1 |
+| 1 | datafield | 100 | d | 1903-1950. | 2 | 1 | 1 | ` ` | 2 | 1 |
+| 1 | datafield | 245 | a | Nineteen eighty-four / | 3 | 1 | 1 | 0 | 1 | 1 |
+| 1 | datafield | 245 | c | George Orwell. | 3 | 1 | 1 | 0 | 2 | 1 |
+| 1 | datafield | 264 | a | London : | 4 | 1 | ` ` | 1 | 1 | 1 |
+| 1 | datafield | 264 | b | Secker & Warburg, | 4 | 1 | ` ` | 1 | 2 | 1 |
+| 1 | datafield | 264 | c | 1949. | 4 | 1 | ` ` | 1 | 3 | 1 |
+| 1 | datafield | 650 | a | Totalitarianism | 5 | 1 | ` ` | 0 | 1 | 1 |
+| 1 | datafield | 650 | v | Fiction. | 5 | 1 | ` ` | 0 | 2 | 1 |
+| 1 | datafield | 650 | a | Dystopias. | 6 | 2 | ` ` | 0 | 1 | 1 |
+| 1 | datafield | 650 | v | Fiction. | 6 | 2 | ` ` | 0 | 2 | 1 |
+| 1 | datafield | 856 | u | https://example.org/1984 | 7 | 1 | 4 | 0 | 1 | 1 |
+| 1 | datafield | 856 | y | Full text | 7 | 1 | 4 | 0 | 2 | 1 |
+| 1 | datafield | 856 | y | Mirror | 7 | 1 | 4 | 0 | 3 | 2 |
+
+Several features are now explicit rather than hidden in XML nesting:
+
+- both `650` fields have tag `650`, but different `field_order` and `field_occurrence` values;
+- `$v Fiction.` remains attached to the correct `650` instance because the rows share the same `field_order`;
+- the two `856$y` values remain two distinct subfield instances, with `subfield_occurrence` equal to `1` and `2`;
+- indicators remain attached to every row belonging to their data-field instance; and
+- source order is preserved at both field and subfield level.
+
+Nothing forces the analyst to retain all of these columns forever. Their purpose is to make sure the choice to discard structural information is made **explicitly by the analyst**, not implicitly by the parser.
+
+## Querying the canonical representation with `dplyr`
+
+Once parsed, the result is an ordinary tibble. No special query language is required.
+
+### Extract title statements
+
+```r
+library(dplyr)
+
+orwell |>
+  filter(tag == "245") |>
+  select(record_id, subfield_code, value)
+```
+
+### Extract main subject terms
+
+```r
+orwell |>
+  filter(tag == "650", subfield_code == "a") |>
+  select(record_id, field_occurrence, value)
+```
+
+### Keep complete field instances when one subfield matches
+
+This is often more useful than returning only the row that matched the condition. Group by the field instance and retain the entire group:
+
+```r
+orwell |>
+  group_by(record_id, field_order) |>
+  filter(
+    any(
+      tag == "650" &
+      subfield_code == "a" &
+      value == "Totalitarianism"
+    )
+  ) |>
+  ungroup()
+```
+
+The result contains both `$a Totalitarianism` and its associated `$v Fiction.` because they belong to the same `650` occurrence.
+
+### Render complete data fields for inspection
+
+```r
+orwell |>
+  filter(field_type == "datafield") |>
+  group_by(record_id, field_order, tag, ind1, ind2) |>
+  summarise(
+    field = paste0(
+      "$", subfield_code, " ", value,
+      collapse = " "
+    ),
+    .groups = "drop"
+  )
+```
+
+This produces an analysis-friendly field-level view without losing the original grouping before the analyst chooses to collapse it.
+
+### Derive a simplified table when the analysis permits it
+
+For a particular task, you may decide that only one title and a set of subject headings matter. That is easy to derive:
+
+```r
+titles <- orwell |>
+  filter(tag == "245", subfield_code == "a") |>
+  transmute(record_id, title = value)
+
+subjects <- orwell |>
+  filter(tag == "650") |>
+  group_by(record_id, field_order) |>
+  summarise(
+    subject = paste(value, collapse = " -- "),
+    .groups = "drop"
+  ) |>
+  group_by(record_id) |>
+  summarise(
+    subjects = paste(subject, collapse = " | "),
+    .groups = "drop"
+  )
+
+left_join(titles, subjects, by = "record_id")
+```
+
+This illustrates an important asymmetry:
+
+> **Canonical → simplified is easy. Simplified → canonical may be impossible.**
+
+`marcxmlr` therefore preserves structure at ingestion and lets the user decide what can safely be collapsed for a particular analytical purpose.
+
+## Small real-world example: Library of Congress
+
+The Library of Congress publishes a MARCXML record for Carl Sandburg's *Arithmetic*. It is a useful small real-world example because the XML and MARC structure can be inspected directly.
+
+On Linux:
 
 ```bash
 mkdir -p data/loc
@@ -129,16 +461,17 @@ curl --fail --location \
   --output data/loc/sandburg.xml
 ```
 
-Read it into R:
+Then in R:
 
 ```r
 library(marcxmlr)
+library(dplyr)
 
 sandburg <- read_marcxml("data/loc/sandburg.xml")
 
 sandburg |>
-  dplyr::filter(tag == "245") |>
-  dplyr::select(
+  filter(tag == "245") |>
+  select(
     subfield_code,
     value,
     field_order,
@@ -146,221 +479,343 @@ sandburg |>
   )
 ```
 
-The package also installs a small synthetic collection used in examples and
-tests:
+The point of the example is not that tag `245` is difficult to extract. It is that the exact same representation remains safe when fields and subfields repeat in much less convenient records.
+
+## In-memory work: `read_marcxml()`
+
+Use `read_marcxml()` when both the XML document and the parsed result fit comfortably in memory:
 
 ```r
-example_file <- system.file(
-  "extdata",
-  "example-marcxml.xml",
-  package = "marcxmlr"
+marc <- read_marcxml(
+  "records.xml",
+  workers = 1L
+)
+```
+
+The function accepts a MARCXML collection or a standalone record and returns the canonical 11-column tibble.
+
+`n_max` can restrict the number of records parsed, which is useful for previews and development:
+
+```r
+preview <- read_marcxml(
+  "records.xml",
+  n_max = 100L
+)
+```
+
+Because this workflow returns the complete result as an R object, it is the most convenient choice when the collection is reasonably sized and the next step is ordinary interactive analysis.
+
+## Large collections: `marcxml_to_parquet()`
+
+For larger collections, materializing tens of millions of canonical rows as one tibble may be unnecessary or undesirable. `marcxml_to_parquet()` writes the same schema as a directory of Parquet files while keeping normal working memory bounded by the configured processing batches.
+
+Single file:
+
+```r
+marcxml_to_parquet(
+  "catalogue.xml",
+  output_dir = "catalogue-parquet",
+  workers = 1L
+)
+```
+
+Multiple files:
+
+```r
+files <- sort(Sys.glob("data/catalogue/*.xml"))
+
+marcxml_to_parquet(
+  files,
+  output_dir = "catalogue-parquet",
+  workers = 4L
+)
+```
+
+A glob pattern can also be supplied directly when appropriate.
+
+Open the result lazily:
+
+```r
+library(arrow)
+library(dplyr)
+
+catalogue <- open_dataset("catalogue-parquet")
+
+catalogue |>
+  filter(tag == "650", subfield_code == "a") |>
+  count(value, sort = TRUE) |>
+  head(20) |>
+  collect()
+```
+
+`open_dataset()` does not pull the entire catalogue into an R tibble. Filters, projections, and aggregations can be pushed into Arrow before `collect()` is called.
+
+### Global record identity across files
+
+When several MARCXML files are converted into one dataset, `marcxmlr` assigns globally contiguous `record_id` values in deterministic input-file order. The result therefore behaves as one logical collection even when the physical source was split into many XML files.
+
+This is independent of worker completion order: parallel execution must not change record identity.
+
+## Parallel processing
+
+Both public workflows default to `workers = 1L`.
+
+For a **single MARCXML file**, start with sequential execution. The native parser is fast enough that process creation, record dispatch, serialization, and coordination can cost more than they save. `marcxml_to_parquet()` therefore warns periodically when multiple workers are requested for a single file, encouraging the user to benchmark rather than assume that more processes are faster.
+
+Parallelism is much more attractive when a collection is naturally divided across **multiple input files**. In that case, complete files can be processed independently, with each worker using the optimized sequential parser internally.
+
+A reasonable pattern is:
+
+```r
+workers <- max(
+  1L,
+  as.integer(future::availableCores()) - 1L
 )
 
-example <- read_marcxml(example_file)
-
-dim(example)
-#> [1] 18 11
+marcxml_to_parquet(
+  sort(Sys.glob("data/catalogue/*.xml")),
+  output_dir = "catalogue-parquet",
+  workers = workers
+)
 ```
 
-Repeated subfields remain separate:
+Benchmark on the actual machine and input. XML size, average record complexity, storage speed, worker startup, Parquet compression, and memory bandwidth all influence the result.
 
-```r
-example |>
-  dplyr::filter(record_id == 1L, tag == "856") |>
-  dplyr::select(
-    subfield_code,
-    value,
-    subfield_order,
-    subfield_occurrence
-  )
-```
+## Memory and failure model
 
-On the optimized sequential native path, `read_marcxml()` does **not** build a
-DOM for the complete collection. It validates/counts the selected records and
-then fills the canonical output directly. Compatibility fallbacks may use a
-different XML representation. The complete resulting tibble is, however, still
-materialized in R memory.
+The two workflows deliberately have different memory guarantees:
 
-## The canonical 11-column representation
+| Function | XML ingestion | Parsed result |
+|---|---|---|
+| `read_marcxml()` | Builds the document needed for in-memory parsing | Complete canonical tibble is returned in memory |
+| `marcxml_to_parquet()` | Processes complete records incrementally | Canonical rows are written to Parquet parts; only a summary is returned |
 
-### Why not reproduce the familiar MARC field display?
+Bounded memory does **not** mean constant memory. An unusually large individual record still has to be represented while it is being processed, and multiple workers naturally increase concurrent memory use.
 
-MARC 21 is highly structured and is often displayed in a form that looks
-tabular, with one field per line. Part of the first record in the bundled
-example could be written in the familiar form:
+For Parquet conversion, output is first written under a staging directory. The requested dataset directory is published only after successful conversion, and an existing output directory is not silently overwritten. This reduces the risk of mistaking a partially written dataset for a complete one.
+
+---
+
+# Part II — Under the hood: implementation and performance
+
+Everything above is sufficient to use `marcxmlr` correctly. This part is for readers who want to understand why the package can preserve a comparatively rich MARC representation without paying the usual price of millions of high-level XML operations in R.
+
+The short answer is: **the expensive loops are not R loops**.
+
+The package keeps the public interface small and R-native, while moving the hot parsing path into compiled C code using libxml2 directly.
+
+## Architectural overview
+
+The in-memory path can be thought of as:
 
 ```text
-245 10 $a Scalable catalogues : $b a synthetic example
-650 #0 $a Libraries $x Data processing
-650 #0 $a Metadata
-856 40 $u https://example.org/item/1 $y Full text $y Alternate access
+MARCXML file
+    ↓
+libxml2 document
+    ↓
+native MARC traversal in C
+    ↓
+pre-sized canonical columns
+    ↓
+11-column tibble
 ```
 
-Here `#` is a conventional display symbol for a blank indicator. It is not the
-character stored in the MARCXML record.
+The bounded-memory Parquet path is different at the ingestion boundary:
 
-This display is a useful view of a record, but it is not one rectangular data
-table. Records contain repeatable fields, while data fields contain their own
-repeatable subfields. A table with one row per field would therefore have to
-store the subfields in a combined string or a list-column. A table with one
-row per record would need list-columns, numbered columns, or rules for joining
-repeated values. Those choices make filtering, counting, SQL queries, and
-Arrow processing more difficult, and combined strings must later be parsed
-again.
-
-`marcxmlr` instead represents the smallest content-bearing MARC units:
-
-- a leader occupies one row;
-- a control field occupies one row; and
-- each subfield of a data field occupies one row.
-
-The tag, indicators, and identity of a data field are repeated on each of its
-subfield rows. This small amount of deliberate redundancy produces one stable
-table while preserving which subfields belong to the same field. A familiar
-one-row-per-field display can always be derived from it.
-
-### Column definitions
-
-Every result has the following columns, in this order:
-
-| Column | Type | Precise meaning |
-|---|---|---|
-| `record_id` | integer | Positive identity assigned to each record during parsing. It is stable across sequential and parallel execution and is not taken from control field `001`. The original `001`, when present, remains a control-field row. |
-| `field_type` | character | The structural kind of the source element: `leader`, `controlfield`, or `datafield`. |
-| `tag` | character | `LDR` for the leader; otherwise the MARC field tag such as `001`, `245`, or `856`. It is character data so leading zeros are preserved. |
-| `subfield_code` | character | The code of a data-field subfield, such as `a`, `x`, `u`, or `2`. It is `NA` for leaders and control fields, which do not contain subfields. |
-| `value` | character | The leader value, complete control-field value, or individual subfield value. Values are not converted to numbers or dates, and meaningful leading or trailing whitespace is not trimmed. |
-| `field_order` | integer | Identity and source position of a field inside its record. The leader is `0`; variable fields are numbered `1, 2, ...`. All subfield rows belonging to one data field have the same `field_order`. Even when source order is not analytically important, this column is the unambiguous field-instance key. |
-| `field_occurrence` | integer | One-based occurrence of the same field type and tag inside a record. For example, two `650` fields have occurrences `1` and `2`. The value is repeated across all subfields of that field. |
-| `ind1` | character | First indicator value of a data field, stored as character data, including a blank space. In conforming MARC 21 this is one character. It is `NA` for the leader and control fields because indicators do not apply to them. |
-| `ind2` | character | Second indicator of a data field, with the same storage rules as `ind1`. Its interpretation, like that of `ind1`, depends on the field tag. |
-| `subfield_order` | integer | One-based position of a subfield inside its containing data field. It is `NA` for leaders and control fields. |
-| `subfield_occurrence` | integer | One-based occurrence of the same subfield code inside one data field. In the example `856`, the two `$y` subfields have occurrences `1` and `2`. It is `NA` for leaders and control fields. |
-
-The keys needed to distinguish structural units are therefore:
-
-- record: `record_id`;
-- field: `record_id + field_order`; and
-- subfield: `record_id + field_order + subfield_order`.
-
-`field_occurrence` and `subfield_occurrence` are convenient, readable counters
-within those units. They are particularly useful when selecting the first,
-second, or subsequent occurrence of a tag or code.
-
-### Indicators are part of the MARC meaning
-
-`ind1` and `ind2` are character columns rather than numbers. A blank indicator
-is stored as `" "`; it is different from `NA`, which means that indicators do
-not apply to that row. Indicator meanings are defined separately for each MARC
-field and should not be interpreted as a single scale.
-
-For example, in the bundled record:
-
-- `245 10` means that field `245` has first indicator `1` (a title added entry)
-  and second indicator `0` (no initial characters are excluded for filing), as
-  defined for the
-  [MARC 21 title statement](https://www.loc.gov/marc/bibliographic/bd245.html);
-- `856 40` means that field `856` uses HTTP (`ind1 = "4"`) and links to the
-  resource described by the record (`ind2 = "0"`), as defined for
-  [electronic location and access](https://www.loc.gov/marc/bibliographic/bd856.html).
-
-Preserving indicators as data allows catalogue-wide questions such as which
-title-filing conventions or electronic-resource relationships occur in the
-source records.
-
-### Why the long representation is convenient for analysis
-
-The first example record has two separate `650` subject fields. The first has
-subfields `$a` and `$x`; the second has another `$a`. Grouping by
-`field_order` keeps these headings separate while making their content easy to
-summarize:
-
-```r
-subjects <- example |>
-  dplyr::filter(record_id == 1L, tag == "650") |>
-  dplyr::arrange(field_order, subfield_order) |>
-  dplyr::group_by(record_id, field_order, field_occurrence) |>
-  dplyr::summarise(
-    subject = paste(value, collapse = " -- "),
-    .groups = "drop"
-  )
-
-subjects
-#> # A tibble: 2 × 4
-#>   record_id field_order field_occurrence subject
-#>       <int>       <int>            <int> <chr>
-#> 1         1           4                1 Libraries -- Data processing
-#> 2         1           5                2 Metadata
+```text
+MARCXML collection(s)
+    ↓
+libxml2 streaming reader
+    ↓
+complete MARC records / bounded batches
+    ↓
+native MARC parser in C
+    ↓
+canonical rows
+    ↓
+Parquet parts
+    ↓
+completed Arrow dataset
 ```
 
-Grouping only by `record_id` and `tag` would incorrectly merge both subject
-fields. The field-instance key prevents that error without requiring nested
-objects or parsing `$a` and `$x` out of a combined string.
+The same canonical schema emerges from both paths.
 
-Because one data field contributes one row per subfield, counting table rows
-does not necessarily count fields. Actual field counts are obtained by first
-selecting distinct field instances:
+## Where XML rectangling normally becomes expensive
 
-```r
-field_counts <- example |>
-  dplyr::filter(field_type == "datafield") |>
-  dplyr::distinct(record_id, field_order, tag, ind1, ind2) |>
-  dplyr::count(tag, name = "fields")
+A straightforward XML-to-table implementation in R can accumulate overhead in several places:
 
-field_counts
-#> # A tibble: 5 × 2
-#>   tag   fields
-#>   <chr>  <int>
-#> 1 100        1
-#> 2 245        2
-#> 3 500        1
-#> 4 650        2
-#> 5 856        1
+1. repeated XPath evaluation or high-level node traversal;
+2. crossing the R/C boundary for many small operations;
+3. serializing XML nodes to character strings;
+4. reparsing those strings as independent XML fragments;
+5. repeatedly growing intermediate R vectors or data frames;
+6. computing repeated-field and repeated-subfield occurrence numbers afterward with grouped R operations; and
+7. creating parallel workers around work units that have become too small to amortize process overhead.
+
+None of these operations is intrinsically wrong. They are often ideal for ordinary XML tasks. They become expensive when multiplied by millions of MARC fields and subfields.
+
+`marcxmlr` is optimized around the fact that MARCXML has a small and predictable structural vocabulary: records contain a leader, control fields, and data fields; data fields contain ordered subfields. The parser does not need a general-purpose transformation language for the hot loop.
+
+## Direct libxml2 traversal
+
+The native parser walks libxml2 nodes directly and recognizes the MARCXML structures it needs. Field tags, indicators, subfield codes, text values, and source order are extracted while traversing the record rather than through repeated R-level queries.
+
+This has two consequences:
+
+- the structural logic stays close to the underlying XML representation; and
+- far fewer temporary R objects are needed during extraction.
+
+The result is still an ordinary R tibble. C is an implementation detail, not a new user-facing data model.
+
+## Two-pass sizing and preallocation
+
+One of the most expensive patterns in high-volume rectangling is repeatedly extending an output object while the final number of rows is still unknown.
+
+The native parser avoids that pattern by determining the required output size before filling the result vectors. Once the number of canonical rows is known, the output columns can be allocated at their target size and populated directly.
+
+Conceptually:
+
+```text
+pass 1: inspect structure → determine canonical row count
+pass 2: traverse structure → fill preallocated columns
 ```
 
-When the field-level MARC view is desirable, it can be recreated explicitly:
+This turns output construction into predictable linear work rather than repeated allocation and copying.
 
-```r
-marc_field_view <- example |>
-  dplyr::filter(record_id == 1L, field_type == "datafield") |>
-  dplyr::arrange(field_order, subfield_order) |>
-  dplyr::group_by(record_id, field_order, tag, ind1, ind2) |>
-  dplyr::summarise(
-    contents = paste0(
-      "$", subfield_code, " ", value,
-      collapse = " "
-    ),
-    .groups = "drop"
-  )
+## Occurrence bookkeeping in native code
 
-marc_field_view |>
-  dplyr::filter(tag == "856")
-#> # A tibble: 1 × 6
-#>   record_id field_order tag   ind1  ind2  contents
-#>       <int>       <int> <chr> <chr> <chr> <chr>
-#> 1         1           6 856   4     0     $u https://example.org/item/1 ...
+The canonical representation requires information that is not directly stored as explicit MARCXML attributes:
+
+- which occurrence of tag `650` is this within the record?
+- which occurrence of subfield `$y` is this within this particular `856` field?
+
+A naive implementation can extract all values first and compute these counters later with grouped R transformations. `marcxmlr` instead maintains the required occurrence state while parsing.
+
+The parser therefore emits values such as `field_occurrence` and `subfield_occurrence` as part of construction of the canonical table rather than as a large post-processing step. Native hash-based bookkeeping keeps these counters close to the traversal that creates them instead of requiring a second large grouped pass in R.
+
+This matters because these columns are not cosmetic metadata. They are part of what makes the rectangular representation faithful to repeated MARC structure.
+
+## Preserving order without sorting the result afterward
+
+MARC field order and subfield order are semantic source information. The parser records those positions during traversal:
+
+```text
+field_order       = position of the field instance in the record
+subfield_order    = position inside the containing data field
 ```
 
-The traditional MARC-shaped table is therefore a view that can be derived for
-display. The canonical long representation is retained underneath because it
-is safer and more convenient for analytical work.
+The optimized path therefore does not need to reconstruct source order later by guessing from tags or by imposing a lexical sort.
 
-## Large real-world example: U.S. Government Publishing Office
+For multi-file Parquet conversion, input files are resolved in deterministic order and global record offsets are assigned from that order. Workers may finish in a different sequence, but `record_id` does not depend on completion timing.
 
-The U.S. Government Publishing Office publishes the
-[Catalog of U.S. Government Publications](https://catalog.gpo.gov/) as public
-MARCXML. The February 2026 snapshot used during development was split across 28
-ZIP files of roughly 40,000 records each.
+## Bounded native streaming
 
-GPO also documents validation problems in the source collection. This makes it
-useful integration data: real catalogues are not necessarily perfectly clean.
-`marcxmlr` is deliberately strict about malformed MARCXML structure and reports
-the input file in which a multi-file conversion fails.
+`read_marcxml()` is intentionally an in-memory API. `marcxml_to_parquet()` exists because simply making the parser faster does not solve the memory problem of a result containing tens of millions of rows.
 
-### One 40,000-record MARCXML file
+The streaming path uses libxml2's reader facilities to process complete MARC records incrementally rather than building one DOM for the entire catalogue and then constructing one enormous R object.
 
-For a single file, the recommended starting point in 0.2.0 is simply sequential
-execution:
+The important unit is the **complete record**. A MARC record is never split in a way that would destroy the relationships among its fields and subfields. Records are accumulated into bounded work batches, transformed into canonical rows, written to Parquet, and then released before later batches are processed.
+
+This gives the workflow a bounded normal working set while preserving the exact same schema as the in-memory parser.
+
+## Why Parquet is part of the design
+
+For a large catalogue, parsing is only half the problem. The result also needs a representation that can be queried without immediately reading every canonical row back into R.
+
+Parquet and Arrow provide that second half:
+
+```text
+MARCXML
+   ↓
+marcxmlr
+   ↓
+canonical Parquet dataset
+   ↓
+Arrow / dplyr / DuckDB / other analytical tooling
+```
+
+The parser therefore does not need to invent a package-specific database or query language. Once the canonical data are on disk, they participate in a much broader analytical ecosystem.
+
+## Why single-file parallelism may lose to sequential parsing
+
+Parallel XML parsing sounds attractive, but parallelism has fixed costs:
+
+```text
+worker creation
++ process initialization
++ task scheduling
++ data transfer / serialization
++ result coordination
+```
+
+If the sequential parser itself is slow, these costs may be easy to amortize. Once the hot path has been moved into efficient native code, the balance changes. Splitting one file into many process-level tasks can cost more than simply letting one process parse it rapidly from beginning to end.
+
+That is why `workers = 1L` is the recommended starting point for a single file.
+
+This is not an argument against parallelism. It is an argument for placing parallelism at a level where the work units are large enough.
+
+## File-level parallelism
+
+A catalogue already split into independent MARCXML files provides natural coarse-grained parallelism:
+
+```text
+file 1 ──→ native sequential parser ──→ Parquet parts
+file 2 ──→ native sequential parser ──→ Parquet parts
+file 3 ──→ native sequential parser ──→ Parquet parts
+file 4 ──→ native sequential parser ──→ Parquet parts
+```
+
+Each worker receives a complete file and uses the optimized sequential engine internally. There is little reason for workers to exchange MARC objects with one another. In multi-file mode the file is deliberately the unit of parallel work; `chunk_records` is rejected rather than mixing file-level and within-file scheduling strategies.
+
+Before processing, deterministic record offsets are associated with files. As a result:
+
+```text
+same ordered inputs
+        +
+same MARC records
+        ↓
+same global record_id values
+```
+
+regardless of which worker finishes first.
+
+This design produced byte-identical Parquet output in development tests using different worker counts on the same 27-file GPO collection.
+
+## Compatibility paths
+
+The package retains older R/XML-based paths where they are useful for compatibility, testing, or execution modes that do not use the primary native sequential engine. They provide an important reference implementation, but they are not the performance target of the package.
+
+Keeping a less optimized path is also valuable during development: performance work can be checked against an independently implemented representation instead of merely checking that fast code agrees with itself.
+
+## Benchmark source: the GPO catalogue
+
+The main large-scale development benchmark uses the U.S. Government Publishing Office's public **All CGP Records (MARC XML)** snapshot.
+
+The February 2026 repository contains **1,115,162 MARC bibliographic records** split over **28 ZIP files**, each holding approximately 40,000 records. GPO also notes that the snapshot contains approximately 3,000 MARCXML validation errors, making it useful as real-world rather than laboratory-clean input.
+
+Repository:
+
+<https://github.com/usgpo/cataloging-records-all-cgp-marcxml>
+
+The benchmark figures in this README refer to the files and results used during `marcxmlr` development. GPO may refresh the repository later, so record counts and file contents should be treated as part of the benchmark specification rather than timeless properties of the source.
+
+## Single-file benchmark
+
+One 40,000-record GPO file produced:
+
+```text
+records:          40,000
+canonical rows:   2,143,952
+```
+
+Observed elapsed times in the development benchmark were approximately:
+
+| Workflow | Workers | Elapsed |
+|---|---:|---:|
+| in-memory `read_marcxml()` | 1 | 6.5 s |
+| `marcxml_to_parquet()` | 1 | 8.4 s |
+
+A minimal benchmark pattern is:
 
 ```r
 library(marcxmlr)
@@ -370,170 +825,138 @@ gpo_xml <- paste0(
   "cataloging-records-all-cgp-XML-00.xml"
 )
 
-gpo_parquet <- "data/gpo/gpo-00-parquet"
+in_memory_time <- system.time({
+  gpo <- read_marcxml(
+    gpo_xml,
+    workers = 1L
+  )
+})
 
-conversion <- marcxml_to_parquet(
-  gpo_xml,
-  output_dir = gpo_parquet,
-  batch_records = 5000L
+stopifnot(
+  dplyr::n_distinct(gpo$record_id) == 40000L,
+  nrow(gpo) == 2143952L
 )
+
+in_memory_time
+```
+
+For Parquet:
+
+```r
+out <- "data/gpo/gpo-00-parquet"
+stopifnot(!dir.exists(out))
+
+parquet_time <- system.time({
+  conversion <- marcxml_to_parquet(
+    gpo_xml,
+    output_dir = out,
+    workers = 1L
+  )
+})
+
+conversion
+parquet_time
+```
+
+These are end-to-end timings. They include more than just the inner C parser and are therefore more useful to users than microbenchmarks of isolated functions.
+
+## Multi-file benchmark
+
+A development run used 27 clean GPO files:
+
+```text
+input files:       27
+records:           1,080,000
+canonical rows:    67,672,396
+Parquet parts:     216
+```
+
+Observed elapsed times:
+
+| Workers | Elapsed |
+|---:|---:|
+| 4 | ~121.7 s |
+| 7 | ~99–100 s |
+
+The remaining source file in the downloaded set was excluded from this benchmark because it contained a malformed data field without subfield elements. The parser's strict behaviour was retained rather than changing the data model merely to make the benchmark consume every source file.
+
+A reproducible pattern is:
+
+```r
+library(marcxmlr)
+
+files <- sort(Sys.glob(
+  "data/gpo/cataloging-records-all-cgp-XML-*.xml"
+))
+
+# Use the exact clean set intended for the benchmark.
+files <- files[seq_len(27L)]
+
+system.time({
+  conversion <- marcxml_to_parquet(
+    files,
+    output_dir = "data/gpo/all-clean-parquet",
+    workers = 7L
+  )
+})
 
 conversion
 ```
 
-For the February 2026 part `00` used during development, this produced:
+When reproducing benchmarks, record the exact package version, R version, libxml2 version, Arrow version, operating system, CPU, storage, input checksums, and worker count. Without that information, elapsed times are anecdotes rather than benchmarks.
 
-```text
-40,000 records
-2,143,952 canonical rows
-```
-
-The full canonical result is not returned to R. `marcxml_to_parquet()` writes
-bounded batches as Parquet fragments and returns a conversion summary.
-
-The resulting directory can be queried lazily with Arrow:
+## Inspecting the Parquet result without materializing it
 
 ```r
-gpo <- arrow::open_dataset(gpo_parquet)
+library(arrow)
+library(dplyr)
 
-gpo |>
-  dplyr::filter(
-    record_id <= 10L,
-    tag == "245",
-    subfield_code == "a"
+x <- open_dataset("data/gpo/all-clean-parquet")
+
+x |>
+  summarise(
+    rows = n(),
+    max_record_id = max(record_id)
   ) |>
-  dplyr::select(record_id, title = value) |>
-  dplyr::collect()
+  collect()
 ```
 
-Avoid calling `collect()` on an entire large dataset unless the result is known
-to fit in memory.
+A structural audit can also check invariants such as:
 
-### Multiple MARCXML files
+- `record_id` values are contiguous;
+- each record has exactly one leader when required by the input contract;
+- `field_order` increases according to source order;
+- repeated field occurrences are numbered within record and tag;
+- subfield order restarts for each data-field instance; and
+- repeated subfield codes receive distinct `subfield_occurrence` values.
 
-Version 0.2.0 allows `marcxml_to_parquet()` to accept an explicit vector of files
-or a glob pattern:
+Performance is useful only if these invariants remain true.
 
-```r
-conversion <- marcxml_to_parquet(
-  "data/gpo/cataloging-records-all-cgp-XML-*.xml",
-  output_dir = "data/gpo/gpo-multi-parquet",
-  batch_records = 5000L,
-  workers = 4L
-)
-```
+## Performance philosophy
 
-Glob matches are resolved in sorted order. For multi-file input, complete files
-are the unit of parallel work. Each worker internally uses the optimized
-sequential parser.
+`marcxmlr` does not try to gain speed by simplifying MARC semantics. The design works in the opposite direction:
 
-`record_id` remains globally contiguous and deterministic across the entire
-dataset. Worker completion order does not alter the canonical result.
+1. define the information that a faithful rectangular representation must preserve;
+2. keep that representation stable;
+3. move the expensive implementation work underneath it into native code; and
+4. stream or parallelize only where doing so does not change the data contract.
 
-This is the preferred use of parallelism in 0.2.0: parallelize **files**, rather
-than automatically parallelizing the records inside one already-fast native
-parse.
+That separation is important. The canonical representation is the public promise; C, libxml2, batching, and worker strategy are implementation choices that can continue to improve without requiring analysts to rewrite their code.
 
-## Performance observed during development
+For the ordinary R user, the result is still just a tibble or an Arrow dataset. For the technically minded reader, the performance path is deliberately much closer to a purpose-built MARC parser than to a loop of high-level XML queries.
 
-The figures below are development measurements, not performance guarantees.
-They depend on hardware, storage, XML structure, compression and package
-versions.
+---
 
-On the development machine, one 40,000-record GPO file producing 2,143,952
-canonical rows gave approximately:
+# References
 
-| Operation | Execution | Elapsed time |
-| --- | --- | ---: |
-| `read_marcxml()` | direct native sequential | 6.5 s |
-| `marcxml_to_parquet()` | native sequential, 5,000-record batches | 8.4 s |
+- Library of Congress, [MARC standards](https://www.loc.gov/marc/).
+- Library of Congress, [MARC 21 Format for Bibliographic Data: Introduction](https://www.loc.gov/marc/bibliographic/bdintro.html).
+- Library of Congress, [MARCXML](https://www.loc.gov/standards/marcxml/).
+- Library of Congress, [MARCXML Design Considerations](https://www.loc.gov/standards/marcxml/marcxml-design.html).
+- Library of Congress, [MARCXML Architecture](https://www.loc.gov/standards/marcxml/marcxml-architecture.html).
+- U.S. Government Publishing Office, [All CGP Records (MARC XML)](https://github.com/usgpo/cataloging-records-all-cgp-marcxml).
+- Apache Arrow for R, [Datasets](https://arrow.apache.org/docs/r/articles/dataset.html).
+- `xml2`, <https://xml2.r-lib.org/>.
+- `XML`, <https://CRAN.R-project.org/package=XML>.
+- `maRc`, <https://github.com/davidfuhry/maRc>.
 
-The important practical change is that within-file parallelism is no longer the
-obvious optimization. Once the parsing bottlenecks were moved into C/libxml2,
-the overhead of splitting one XML file among processes can outweigh the parsing
-work itself.
-
-A larger multi-file development run used 27 GPO XML files. The final source
-file in the downloaded snapshot was excluded from this benchmark because it
-contained a malformed MARC data field with no subfield elements:
-
-```text
-1,080,000 records
-67,672,396 canonical rows
-216 Parquet files
-```
-
-Observed elapsed times were approximately:
-
-| File-level workers | Elapsed time |
-| ---: | ---: |
-| 4 | 121.7 s |
-| 7 | 99-100 s |
-
-The 4-worker and 7-worker runs produced byte-identical Parquet fragments in that
-test.
-
-These results illustrate the intended performance model rather than promise a
-specific speedup: use the optimized sequential engine for an individual file;
-use file-level parallelism when a catalogue naturally consists of several
-files.
-
-## Parallelism
-
-Both public functions still accept `workers`.
-
-For both `read_marcxml()` and single-file `marcxml_to_parquet()`, `workers = 1L`
-should normally be tried first. The older worker-safe serialized-record paths
-are retained for compatibility and experimentation. For single-file
-`marcxml_to_parquet()` calls, version 0.2.0 emits a periodic warning when
-multiple workers are requested because parallel execution may be slower.
-
-For multi-file `marcxml_to_parquet()` calls, `workers > 1L` means file-level
-parallelism. This avoids making the fastest native single-file parser pay the
-cost of unnecessary record-level process coordination.
-
-The previous `future` plan is restored after package-managed parallel work.
-
-## Memory model and failure safety
-
-The two workflows deliberately have different memory contracts:
-
-| Function | XML processing | Result |
-| --- | --- | --- |
-| `read_marcxml()` | Direct native parsing on the optimized path; compatibility fallback when needed | Complete canonical tibble in memory |
-| `marcxml_to_parquet()` | Bounded native batches on the optimized path | Parquet dataset on disk plus a small summary |
-
-Bounded memory does not mean constant memory. An unusually large individual
-record must still fit in memory, and multiple file-level workers naturally
-increase concurrent memory use.
-
-Parquet output is written under a staging directory beside the requested
-destination. The final dataset directory is published only after the complete
-conversion succeeds. Existing output directories are not silently overwritten.
-
-## Scope of version 0.2.0
-
-Version 0.2.0 focuses on faithful and scalable MARCXML ingestion. It does not:
-
-* validate every record against the complete MARCXML XSD or all MARC content
-  rules;
-* parse MARC ISO 2709 files;
-* interpret the domain meaning of every MARC tag and indicator;
-* silently deduplicate or collapse repeated fields or subfields;
-* impose an application-specific wide representation; or
-* attempt to replace an integrated library system.
-
-The canonical representation is intentionally conservative: structural
-information is preserved first, and application-specific analytical views can
-be derived from it afterward.
-
-## References
-
-* Library of Congress, [MARC standards](https://www.loc.gov/marc/).
-* Library of Congress, [MARCXML](https://www.loc.gov/standards/marcxml/).
-* Library of Congress,
-  [MARCXML design considerations](https://www.loc.gov/standards/marcxml/marcxml-design.html).
-* U.S. Government Publishing Office,
-  [All CGP Records (MARC XML)](https://github.com/usgpo/cataloging-records-all-cgp-marcxml).
-* Apache Arrow for R,
-  [Working with multi-file datasets](https://arrow.apache.org/docs/r/articles/dataset.html).
