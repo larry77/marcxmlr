@@ -1,4 +1,17 @@
-# marcxmlr 0.1.0.9000
+# marcxmlr 0.2.0
+
+* Extend `marcxml_to_parquet()` to accept multiple MARCXML files and glob
+  patterns such as `"catalogue/*.xml"`, producing one Parquet dataset with
+  deterministic, globally contiguous `record_id` values across input files.
+* Add file-level parallel processing for multi-file conversion. Complete files
+  are processed independently with the optimized sequential native engine, while
+  output ordering and record identifiers remain independent of worker completion
+  order.
+* Preserve the established single-file behaviour and worker-safe fallback paths.
+  When `workers > 1` is requested for a single file, issue a periodic warning
+  that the optimized sequential native parser may be faster and that users
+  should benchmark their workload.
+
 
 * Add a two-pass direct native libxml2 engine for sequential `read_marcxml()`:
   the first pass validates/counts records and the second fills the canonical
