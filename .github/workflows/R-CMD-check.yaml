@@ -72,7 +72,7 @@ jobs:
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          pak-version: repo
+          pak-version: ${{ runner.os == 'Windows' && 'repo' || 'stable' }}
           dependencies: '"hard"'
           extra-packages: |
             any::rcmdcheck
