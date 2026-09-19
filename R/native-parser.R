@@ -316,10 +316,15 @@
   for (i in seq_along(starts)) {
     positions <- seq.int(starts[[i]], min(count, starts[[i]] + 255L))
     texts <- purrr::map_chr(indices[positions], function(index) records[[index]])
-    columns <- .Call(
-      C_marcxml_parse_records,
-      texts,
-      as.integer(record_ids[positions])
+    # A native parse error declines the fast path. The reference parser remains
+    # responsible for the public validation error and diagnostic.
+    columns <- tryCatch(
+      .Call(
+        C_marcxml_parse_records,
+        texts,
+        as.integer(record_ids[positions])
+      ),
+      error = function(e) NULL
     )
     if (is.null(columns)) {
       # Re-run the original task, preserving its validation order, messages,
@@ -340,7 +345,12 @@
     return(NULL)
   }
 
-  .Call(C_marcxml_reader_open, file)
+  # A native reader error declines the fast path. The reference stream remains
+  # responsible for the public validation error and diagnostic.
+  tryCatch(
+    .Call(C_marcxml_reader_open, file),
+    error = function(e) NULL
+  )
 }
 
 .native_marcxml_reader_next <- function(reader, batch_records) {

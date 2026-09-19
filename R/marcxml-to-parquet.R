@@ -59,6 +59,8 @@
   task,
   shared_records,
   first_record_id,
+  first_record_number,
+  source_file,
   compression
 ) {
   result <- .native_marcxml_records(
@@ -68,9 +70,11 @@
   )
   if (is.null(result)) {
     parsed <- purrr::map(task$indices, function(index) {
-      parse_marcxml_record(
+      .parse_marcxml_record_with_context(
         record = shared_records[[index]],
-        record_id = first_record_id + index - 1L
+        record_id = first_record_id + index - 1L,
+        source_file = source_file,
+        record_number = first_record_number + index - 1L
       )
     })
     result <- purrr::list_rbind(parsed)
@@ -530,8 +534,11 @@ marcxml_to_parquet <- function(
     }
 
     records <- state$records[seq_len(record_count)]
+    first_record_number <- as.integer(
+      state$record_count - record_count + 1L
+    )
     first_record_id <- as.integer(
-      record_id_offset + state$record_count - record_count + 1L
+      record_id_offset + first_record_number
     )
 
     # Release references held by the SAX state before processing the batch.
@@ -568,6 +575,8 @@ marcxml_to_parquet <- function(
             task,
             shared_records = shared_records,
             first_record_id = first_record_id,
+            first_record_number = first_record_number,
+            source_file = input_file,
             compression = compression
           )
         }) |>
@@ -580,6 +589,8 @@ marcxml_to_parquet <- function(
         .write_marcxml_parquet_task,
         shared_records = records,
         first_record_id = first_record_id,
+        first_record_number = first_record_number,
+        source_file = input_file,
         compression = compression
       )
     }

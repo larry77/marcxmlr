@@ -1,11 +1,20 @@
-.parse_marcxml_text_chunk <- function(record_texts, record_ids) {
+.parse_marcxml_text_chunk <- function(
+  record_texts,
+  record_ids,
+  source_file = NULL
+) {
   native <- .native_marcxml_records(record_texts, record_ids)
   if (!is.null(native)) {
     return(native)
   }
 
   parsed <- purrr::map(record_ids, function(record_id) {
-    parse_marcxml_record(record_texts[[record_id]], record_id)
+    .parse_marcxml_record_with_context(
+      record = record_texts[[record_id]],
+      record_id = record_id,
+      source_file = source_file,
+      record_number = record_id
+    )
   })
 
   .bind_marcxml_results(parsed)
@@ -192,7 +201,11 @@ read_marcxml <- function(
 
   if (effective_workers == 1L) {
     parsed_chunks <- purrr::map(record_chunks, function(record_ids) {
-      .parse_marcxml_text_chunk(record_texts, record_ids)
+      .parse_marcxml_text_chunk(
+        record_texts,
+        record_ids,
+        source_file = file
+      )
     })
 
     return(.bind_marcxml_results(parsed_chunks))
@@ -207,7 +220,11 @@ read_marcxml <- function(
   shared_record_texts <- mori::share(record_texts)
 
   parsed_chunks <- purrr::map(record_chunks, function(record_ids) {
-    .parse_marcxml_text_chunk(shared_record_texts, record_ids)
+    .parse_marcxml_text_chunk(
+      shared_record_texts,
+      record_ids,
+      source_file = file
+    )
   }) |>
     futurize::futurize()
 
