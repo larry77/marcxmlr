@@ -1,3 +1,12 @@
+# marcxmlr 0.2.1
+
+* Improve portability of native parsing fallbacks by treating native
+  libxml2 errors as fast-path declines and preserving the reference
+  parser for public validation diagnostics.
+* Improve malformed-record diagnostics by reporting the source file and
+  record number, including the global `record_id` where relevant during
+  multi-file Parquet conversion.
+
 # marcxmlr 0.2.0
 
 * Extend `marcxml_to_parquet()` to accept multiple MARCXML files and glob

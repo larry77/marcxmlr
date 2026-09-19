@@ -297,3 +297,50 @@ parse_marcxml_record <- function(record, record_id = 1L) {
   root <- xml2::xml_root(document)
   .parse_marcxml_record_node(root, record_id)
 }
+
+.parse_marcxml_record_with_context <- function(
+  record,
+  record_id,
+  source_file = NULL,
+  record_number = record_id
+) {
+  tryCatch(
+    parse_marcxml_record(record, record_id),
+    error = function(e) {
+      record_label <- sprintf(
+        "record %s",
+        format(record_number, scientific = FALSE, trim = TRUE)
+      )
+
+      if (!identical(as.integer(record_number), as.integer(record_id))) {
+        record_label <- paste0(
+          record_label,
+          sprintf(
+            " (global record_id %s)",
+            format(record_id, scientific = FALSE, trim = TRUE)
+          )
+        )
+      }
+
+      location <- if (
+        is.character(source_file) &&
+          length(source_file) == 1L &&
+          !is.na(source_file) &&
+          nzchar(source_file)
+      ) {
+        sprintf(
+          "MARCXML parsing failed in file '%s', %s",
+          source_file,
+          record_label
+        )
+      } else {
+        sprintf("MARCXML parsing failed at %s", record_label)
+      }
+
+      stop(
+        paste0(location, ":\n", conditionMessage(e)),
+        call. = FALSE
+      )
+    }
+  )
+}

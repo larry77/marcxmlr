@@ -1,6 +1,6 @@
 Package: marcxmlr
 Title: Faithful and Scalable MARCXML Parsing
-Version: 0.2.0
+Version: 0.2.1
 Authors@R: 
     person("Lorenzo", "Isella", email = "lorenzo.isella@gmail.com",
            role = c("aut", "cre"))
