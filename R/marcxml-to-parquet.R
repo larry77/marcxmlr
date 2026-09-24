@@ -507,12 +507,15 @@ marcxml_to_parquet <- function(
     }
   }
 
-  if (workers > 1L) {
-    old_plan <- future::plan()
-    on.exit(future::plan(old_plan), add = TRUE)
-    future::plan(
-      future.mirai::mirai_multisession,
-      workers = workers
+  parallelize <- workers > 1L
+
+  if (parallelize) {
+    with(
+      future::plan(
+        future.mirai::mirai_multisession,
+        workers = workers
+      ),
+      local = TRUE
     )
   }
 
@@ -562,37 +565,31 @@ marcxml_to_parquet <- function(
       list(indices = index, path = path)
     })
 
-    if (workers > 1L) {
-      shared_records <- mori::share(records)
-
-      # Keep the worker call in a locally defined closure. `furrr` discovers
-      # globals required by an anonymous mapping function from that function's
-      # environment; passing the namespace-level task function directly can
-      # omit newly added internal helpers such as `.native_marcxml_records`.
-      task_results <- tasks |>
-        purrr::map(function(task) {
-          .write_marcxml_parquet_task(
-            task,
-            shared_records = shared_records,
-            first_record_id = first_record_id,
-            first_record_number = first_record_number,
-            source_file = input_file,
-            compression = compression
-          )
-        }) |>
-        futurize::futurize()
-
-      rm(shared_records)
+    shared_records <- if (parallelize) {
+      mori::share(records)
     } else {
-      task_results <- purrr::map(
-        tasks,
-        .write_marcxml_parquet_task,
-        shared_records = records,
-        first_record_id = first_record_id,
-        first_record_number = first_record_number,
-        source_file = input_file,
-        compression = compression
-      )
+      records
+    }
+
+    # Keep the task call in a locally defined closure. `furrr` discovers
+    # globals required by an anonymous mapping function from that function's
+    # environment; passing the namespace-level task function directly can
+    # omit newly added internal helpers such as `.native_marcxml_records`.
+    task_results <- tasks |>
+      purrr::map(function(task) {
+        .write_marcxml_parquet_task(
+          task,
+          shared_records = shared_records,
+          first_record_id = first_record_id,
+          first_record_number = first_record_number,
+          source_file = input_file,
+          compression = compression
+        )
+      }) |>
+      futurize::futurize(when = parallelize)
+
+    if (parallelize) {
+      rm(shared_records)
     }
 
     state$row_count <- state$row_count + sum(
