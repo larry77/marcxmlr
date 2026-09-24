@@ -6,6 +6,9 @@
 #include <libxml/xmlerror.h>
 #include <libxml/tree.h>
 #include <libxml/xmlreader.h>
+#include <libxml/xmlwriter.h>
+#include <libxml/chvalid.h>
+#include <libxml/xmlstring.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -1792,6 +1795,707 @@ SEXP C_marcxml_reader_close(SEXP ext) {
     return R_NilValue;
 }
 
+
+/* Serialize one already-diagnosed, already-ordered canonical shard directly
+ * with libxml2's streaming xmlTextWriter API. R remains responsible for
+ * diagnostics, shard selection, staging/rollback, and public conditions. */
+static int writer_same_utf8(SEXP x, R_xlen_t i, R_xlen_t j) {
+    if (STRING_ELT(x, i) == NA_STRING || STRING_ELT(x, j) == NA_STRING)
+        return 0;
+    return strcmp(
+        Rf_translateCharUTF8(STRING_ELT(x, i)),
+        Rf_translateCharUTF8(STRING_ELT(x, j))
+    ) == 0;
+}
+
+static void validate_writer_columns(SEXP columns) {
+    static const SEXPTYPE expected[] = {
+        INTSXP, STRSXP, STRSXP, STRSXP, STRSXP,
+        INTSXP, STRSXP, STRSXP, INTSXP
+    };
+
+    if (TYPEOF(columns) != VECSXP || XLENGTH(columns) != 9)
+        Rf_error("Invalid native MARCXML writer columns.");
+
+    R_xlen_t n = XLENGTH(VECTOR_ELT(columns, 0));
+
+    for (int j = 0; j < 9; ++j) {
+        SEXP column = VECTOR_ELT(columns, j);
+        if (TYPEOF(column) != expected[j] || XLENGTH(column) != n)
+            Rf_error("Invalid native MARCXML writer columns.");
+    }
+
+    SEXP record_id = VECTOR_ELT(columns, 0);
+    SEXP field_type = VECTOR_ELT(columns, 1);
+    SEXP tag = VECTOR_ELT(columns, 2);
+    SEXP subfield_code = VECTOR_ELT(columns, 3);
+    SEXP value = VECTOR_ELT(columns, 4);
+    SEXP field_order = VECTOR_ELT(columns, 5);
+    SEXP ind1 = VECTOR_ELT(columns, 6);
+    SEXP ind2 = VECTOR_ELT(columns, 7);
+    SEXP subfield_order = VECTOR_ELT(columns, 8);
+
+    int previous_record = 0;
+    int previous_field = -1;
+    int previous_subfield = 0;
+    int seen_datafield = 0;
+
+    for (R_xlen_t i = 0; i < n; ++i) {
+        int rid = INTEGER(record_id)[i];
+        int order = INTEGER(field_order)[i];
+
+        if (rid == NA_INTEGER || rid < 1 ||
+            order == NA_INTEGER || order < 0 ||
+            STRING_ELT(field_type, i) == NA_STRING ||
+            STRING_ELT(tag, i) == NA_STRING ||
+            STRING_ELT(value, i) == NA_STRING) {
+            Rf_error("Invalid native MARCXML writer row.");
+        }
+
+        const char *type =
+            Rf_translateCharUTF8(STRING_ELT(field_type, i));
+        int leader = strcmp(type, "leader") == 0;
+        int control = strcmp(type, "controlfield") == 0;
+        int data = strcmp(type, "datafield") == 0;
+
+        if (!leader && !control && !data)
+            Rf_error("Invalid native MARCXML writer field type.");
+
+        int new_record = (i == 0 || rid != previous_record);
+
+        if (new_record) {
+            if (i > 0 && rid <= previous_record)
+                Rf_error("Native MARCXML writer rows are not record-ordered.");
+            if (!leader || order != 0)
+                Rf_error("Native MARCXML writer record does not begin with its leader.");
+
+            previous_record = rid;
+            previous_field = 0;
+            previous_subfield = 0;
+            seen_datafield = 0;
+        } else {
+            if (leader)
+                Rf_error("Native MARCXML writer encountered a misplaced leader.");
+            if (order < previous_field)
+                Rf_error("Native MARCXML writer rows are not field-ordered.");
+
+            if (order == previous_field) {
+                if (!data || i == 0 ||
+                    !writer_same_utf8(field_type, i, i - 1) ||
+                    !writer_same_utf8(tag, i, i - 1) ||
+                    !writer_same_utf8(ind1, i, i - 1) ||
+                    !writer_same_utf8(ind2, i, i - 1)) {
+                    Rf_error("Native MARCXML writer field rows are inconsistent.");
+                }
+            } else {
+                previous_field = order;
+                previous_subfield = 0;
+            }
+        }
+
+        if (control && seen_datafield)
+            Rf_error("Native MARCXML writer encountered a controlfield after a datafield.");
+
+        if (data) {
+            int suborder = INTEGER(subfield_order)[i];
+            if (STRING_ELT(subfield_code, i) == NA_STRING ||
+                STRING_ELT(ind1, i) == NA_STRING ||
+                STRING_ELT(ind2, i) == NA_STRING ||
+                suborder == NA_INTEGER || suborder < 1 ||
+                suborder <= previous_subfield) {
+                Rf_error("Invalid native MARCXML writer datafield row.");
+            }
+            previous_subfield = suborder;
+            seen_datafield = 1;
+        } else {
+            previous_subfield = 0;
+        }
+    }
+}
+
+SEXP C_marcxml_write_collection(SEXP columns, SEXP path, SEXP pretty) {
+    validate_writer_columns(columns);
+
+    if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1 ||
+        STRING_ELT(path, 0) == NA_STRING ||
+        TYPEOF(pretty) != LGLSXP || XLENGTH(pretty) != 1 ||
+        LOGICAL(pretty)[0] == NA_LOGICAL) {
+        Rf_error("Invalid native MARCXML writer arguments.");
+    }
+
+    const char *file = Rf_translateCharUTF8(STRING_ELT(path, 0));
+    xmlTextWriterPtr writer = xmlNewTextWriterFilename(file, 0);
+    if (!writer)
+        Rf_error("Could not create native MARCXML output writer.");
+
+    const char *failure = NULL;
+    int indent = LOGICAL(pretty)[0] ? 1 : 0;
+
+#define WRITER_STEP(call, message) do { \
+    if ((call) < 0) { failure = (message); goto writer_fail; } \
+} while (0)
+
+    WRITER_STEP(
+        xmlTextWriterSetIndent(writer, indent),
+        "Could not configure native MARCXML indentation."
+    );
+    if (indent) {
+        WRITER_STEP(
+            xmlTextWriterSetIndentString(writer, BAD_CAST "  "),
+            "Could not configure native MARCXML indentation."
+        );
+    }
+
+    WRITER_STEP(
+        xmlTextWriterStartDocument(writer, "1.0", "UTF-8", NULL),
+        "Could not start native MARCXML document."
+    );
+    WRITER_STEP(
+        xmlTextWriterStartElementNS(
+            writer,
+            NULL,
+            BAD_CAST "collection",
+            BAD_CAST "http://www.loc.gov/MARC21/slim"
+        ),
+        "Could not start MARCXML collection."
+    );
+
+    SEXP record_id = VECTOR_ELT(columns, 0);
+    SEXP field_type = VECTOR_ELT(columns, 1);
+    SEXP tag = VECTOR_ELT(columns, 2);
+    SEXP subfield_code = VECTOR_ELT(columns, 3);
+    SEXP value = VECTOR_ELT(columns, 4);
+    SEXP field_order = VECTOR_ELT(columns, 5);
+    SEXP ind1 = VECTOR_ELT(columns, 6);
+    SEXP ind2 = VECTOR_ELT(columns, 7);
+    R_xlen_t n = XLENGTH(record_id);
+
+    int current_record = 0;
+    int current_field = -1;
+    int record_open = 0;
+    int datafield_open = 0;
+
+    for (R_xlen_t i = 0; i < n; ++i) {
+        if ((i & 4095) == 0) R_CheckUserInterrupt();
+
+        int rid = INTEGER(record_id)[i];
+        int order = INTEGER(field_order)[i];
+        const char *type =
+            Rf_translateCharUTF8(STRING_ELT(field_type, i));
+        int new_record = !record_open || rid != current_record;
+        int new_field = new_record || order != current_field;
+
+        if (new_record) {
+            if (datafield_open) {
+                WRITER_STEP(
+                    xmlTextWriterEndElement(writer),
+                    "Could not close MARCXML datafield."
+                );
+                datafield_open = 0;
+            }
+            if (record_open) {
+                WRITER_STEP(
+                    xmlTextWriterEndElement(writer),
+                    "Could not close MARCXML record."
+                );
+            }
+            WRITER_STEP(
+                xmlTextWriterStartElement(writer, BAD_CAST "record"),
+                "Could not start MARCXML record."
+            );
+            record_open = 1;
+            current_record = rid;
+            current_field = -1;
+            new_field = 1;
+        }
+
+        if (new_field && datafield_open) {
+            WRITER_STEP(
+                xmlTextWriterEndElement(writer),
+                "Could not close MARCXML datafield."
+            );
+            datafield_open = 0;
+        }
+
+        if (new_field) {
+            current_field = order;
+
+            if (strcmp(type, "leader") == 0) {
+                WRITER_STEP(
+                    xmlTextWriterWriteElement(
+                        writer,
+                        BAD_CAST "leader",
+                        BAD_CAST Rf_translateCharUTF8(STRING_ELT(value, i))
+                    ),
+                    "Could not write MARCXML leader."
+                );
+                continue;
+            }
+
+            if (strcmp(type, "controlfield") == 0) {
+                WRITER_STEP(
+                    xmlTextWriterStartElement(writer, BAD_CAST "controlfield"),
+                    "Could not start MARCXML controlfield."
+                );
+                WRITER_STEP(
+                    xmlTextWriterWriteAttribute(
+                        writer,
+                        BAD_CAST "tag",
+                        BAD_CAST Rf_translateCharUTF8(STRING_ELT(tag, i))
+                    ),
+                    "Could not write MARCXML controlfield tag."
+                );
+                WRITER_STEP(
+                    xmlTextWriterWriteString(
+                        writer,
+                        BAD_CAST Rf_translateCharUTF8(STRING_ELT(value, i))
+                    ),
+                    "Could not write MARCXML controlfield value."
+                );
+                WRITER_STEP(
+                    xmlTextWriterEndElement(writer),
+                    "Could not close MARCXML controlfield."
+                );
+                continue;
+            }
+
+            WRITER_STEP(
+                xmlTextWriterStartElement(writer, BAD_CAST "datafield"),
+                "Could not start MARCXML datafield."
+            );
+            datafield_open = 1;
+            WRITER_STEP(
+                xmlTextWriterWriteAttribute(
+                    writer,
+                    BAD_CAST "tag",
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(tag, i))
+                ),
+                "Could not write MARCXML datafield tag."
+            );
+            WRITER_STEP(
+                xmlTextWriterWriteAttribute(
+                    writer,
+                    BAD_CAST "ind1",
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(ind1, i))
+                ),
+                "Could not write MARCXML ind1."
+            );
+            WRITER_STEP(
+                xmlTextWriterWriteAttribute(
+                    writer,
+                    BAD_CAST "ind2",
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(ind2, i))
+                ),
+                "Could not write MARCXML ind2."
+            );
+        }
+
+        if (strcmp(type, "datafield") == 0) {
+            WRITER_STEP(
+                xmlTextWriterStartElement(writer, BAD_CAST "subfield"),
+                "Could not start MARCXML subfield."
+            );
+            WRITER_STEP(
+                xmlTextWriterWriteAttribute(
+                    writer,
+                    BAD_CAST "code",
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(subfield_code, i))
+                ),
+                "Could not write MARCXML subfield code."
+            );
+            WRITER_STEP(
+                xmlTextWriterWriteString(
+                    writer,
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(value, i))
+                ),
+                "Could not write MARCXML subfield value."
+            );
+            WRITER_STEP(
+                xmlTextWriterEndElement(writer),
+                "Could not close MARCXML subfield."
+            );
+        }
+    }
+
+    if (datafield_open) {
+        WRITER_STEP(
+            xmlTextWriterEndElement(writer),
+            "Could not close MARCXML datafield."
+        );
+    }
+    if (record_open) {
+        WRITER_STEP(
+            xmlTextWriterEndElement(writer),
+            "Could not close MARCXML record."
+        );
+    }
+    WRITER_STEP(
+        xmlTextWriterEndElement(writer),
+        "Could not close MARCXML collection."
+    );
+    WRITER_STEP(
+        xmlTextWriterEndDocument(writer),
+        "Could not finish native MARCXML document."
+    );
+    WRITER_STEP(
+        xmlTextWriterFlush(writer),
+        "Could not flush native MARCXML document."
+    );
+
+    xmlFreeTextWriter(writer);
+#undef WRITER_STEP
+    return R_NilValue;
+
+writer_fail:
+    xmlFreeTextWriter(writer);
+#undef WRITER_STEP
+    Rf_error("%s", failure ? failure : "Native MARCXML writer failed.");
+    return R_NilValue;
+}
+
+
+typedef struct {
+    xmlTextWriterPtr writer;
+    int last_record_id;
+} marcxml_stream_writer;
+
+static SEXP stream_writer_tag(void) {
+    static SEXP tag = NULL;
+    if (tag == NULL) {
+        tag = Rf_install("marcxmlr_stream_writer");
+    }
+    return tag;
+}
+
+static void stream_writer_finalizer(SEXP ext) {
+    marcxml_stream_writer *state =
+        (marcxml_stream_writer *)R_ExternalPtrAddr(ext);
+
+    if (state != NULL) {
+        if (state->writer != NULL) {
+            xmlFreeTextWriter(state->writer);
+            state->writer = NULL;
+        }
+        R_Free(state);
+        R_ClearExternalPtr(ext);
+    }
+}
+
+static marcxml_stream_writer *get_stream_writer(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP ||
+        R_ExternalPtrTag(ext) != stream_writer_tag()) {
+        Rf_error("Invalid native MARCXML stream writer.");
+    }
+
+    marcxml_stream_writer *state =
+        (marcxml_stream_writer *)R_ExternalPtrAddr(ext);
+    if (state == NULL || state->writer == NULL) {
+        Rf_error("Native MARCXML stream writer is closed.");
+    }
+    return state;
+}
+
+SEXP C_marcxml_stream_writer_open(SEXP path, SEXP pretty) {
+    if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1 ||
+        STRING_ELT(path, 0) == NA_STRING ||
+        TYPEOF(pretty) != LGLSXP || XLENGTH(pretty) != 1 ||
+        LOGICAL(pretty)[0] == NA_LOGICAL) {
+        Rf_error("Invalid native MARCXML stream writer arguments.");
+    }
+
+    const char *file = Rf_translateCharUTF8(STRING_ELT(path, 0));
+    xmlTextWriterPtr writer = xmlNewTextWriterFilename(file, 0);
+    if (!writer) {
+        Rf_error("Could not create native MARCXML stream writer.");
+    }
+
+    const char *failure = NULL;
+    int indent = LOGICAL(pretty)[0] ? 1 : 0;
+
+#define STREAM_OPEN_STEP(call, message) do { \
+    if ((call) < 0) { failure = (message); goto stream_open_fail; } \
+} while (0)
+
+    STREAM_OPEN_STEP(
+        xmlTextWriterSetIndent(writer, indent),
+        "Could not configure native MARCXML indentation."
+    );
+    if (indent) {
+        STREAM_OPEN_STEP(
+            xmlTextWriterSetIndentString(writer, BAD_CAST "  "),
+            "Could not configure native MARCXML indentation."
+        );
+    }
+    STREAM_OPEN_STEP(
+        xmlTextWriterStartDocument(writer, "1.0", "UTF-8", NULL),
+        "Could not start native MARCXML document."
+    );
+    STREAM_OPEN_STEP(
+        xmlTextWriterStartElementNS(
+            writer,
+            NULL,
+            BAD_CAST "collection",
+            BAD_CAST "http://www.loc.gov/MARC21/slim"
+        ),
+        "Could not start MARCXML collection."
+    );
+
+    marcxml_stream_writer *state =
+        (marcxml_stream_writer *)R_Calloc(1, marcxml_stream_writer);
+    state->writer = writer;
+    state->last_record_id = 0;
+
+    SEXP ext = PROTECT(R_MakeExternalPtr(state, stream_writer_tag(), R_NilValue));
+    R_RegisterCFinalizerEx(ext, stream_writer_finalizer, TRUE);
+    UNPROTECT(1);
+#undef STREAM_OPEN_STEP
+    return ext;
+
+stream_open_fail:
+    xmlFreeTextWriter(writer);
+#undef STREAM_OPEN_STEP
+    Rf_error("%s", failure ? failure : "Native MARCXML stream writer failed to open.");
+    return R_NilValue;
+}
+
+SEXP C_marcxml_stream_writer_append(SEXP ext, SEXP columns) {
+    marcxml_stream_writer *state = get_stream_writer(ext);
+    validate_writer_columns(columns);
+
+    SEXP record_id = VECTOR_ELT(columns, 0);
+    R_xlen_t n = XLENGTH(record_id);
+    if (n == 0) {
+        return R_NilValue;
+    }
+
+    int first_record = INTEGER(record_id)[0];
+    if (first_record <= state->last_record_id) {
+        Rf_error("Native MARCXML stream writer received non-increasing record ids.");
+    }
+
+    SEXP field_type = VECTOR_ELT(columns, 1);
+    SEXP tag = VECTOR_ELT(columns, 2);
+    SEXP subfield_code = VECTOR_ELT(columns, 3);
+    SEXP value = VECTOR_ELT(columns, 4);
+    SEXP field_order = VECTOR_ELT(columns, 5);
+    SEXP ind1 = VECTOR_ELT(columns, 6);
+    SEXP ind2 = VECTOR_ELT(columns, 7);
+
+    xmlTextWriterPtr writer = state->writer;
+    const char *failure = NULL;
+    int current_record = 0;
+    int current_field = -1;
+    int record_open = 0;
+    int datafield_open = 0;
+
+#define STREAM_APPEND_STEP(call, message) do { \
+    if ((call) < 0) { failure = (message); goto stream_append_fail; } \
+} while (0)
+
+    for (R_xlen_t i = 0; i < n; ++i) {
+        if ((i & 4095) == 0) R_CheckUserInterrupt();
+
+        int rid = INTEGER(record_id)[i];
+        int order = INTEGER(field_order)[i];
+        const char *type =
+            Rf_translateCharUTF8(STRING_ELT(field_type, i));
+        int new_record = !record_open || rid != current_record;
+        int new_field = new_record || order != current_field;
+
+        if (new_record) {
+            if (datafield_open) {
+                STREAM_APPEND_STEP(
+                    xmlTextWriterEndElement(writer),
+                    "Could not close MARCXML datafield."
+                );
+                datafield_open = 0;
+            }
+            if (record_open) {
+                STREAM_APPEND_STEP(
+                    xmlTextWriterEndElement(writer),
+                    "Could not close MARCXML record."
+                );
+            }
+            STREAM_APPEND_STEP(
+                xmlTextWriterStartElement(writer, BAD_CAST "record"),
+                "Could not start MARCXML record."
+            );
+            record_open = 1;
+            current_record = rid;
+            current_field = -1;
+            new_field = 1;
+        }
+
+        if (new_field && datafield_open) {
+            STREAM_APPEND_STEP(
+                xmlTextWriterEndElement(writer),
+                "Could not close MARCXML datafield."
+            );
+            datafield_open = 0;
+        }
+
+        if (new_field) {
+            current_field = order;
+
+            if (strcmp(type, "leader") == 0) {
+                STREAM_APPEND_STEP(
+                    xmlTextWriterWriteElement(
+                        writer,
+                        BAD_CAST "leader",
+                        BAD_CAST Rf_translateCharUTF8(STRING_ELT(value, i))
+                    ),
+                    "Could not write MARCXML leader."
+                );
+                continue;
+            }
+
+            if (strcmp(type, "controlfield") == 0) {
+                STREAM_APPEND_STEP(
+                    xmlTextWriterStartElement(writer, BAD_CAST "controlfield"),
+                    "Could not start MARCXML controlfield."
+                );
+                STREAM_APPEND_STEP(
+                    xmlTextWriterWriteAttribute(
+                        writer,
+                        BAD_CAST "tag",
+                        BAD_CAST Rf_translateCharUTF8(STRING_ELT(tag, i))
+                    ),
+                    "Could not write MARCXML controlfield tag."
+                );
+                STREAM_APPEND_STEP(
+                    xmlTextWriterWriteString(
+                        writer,
+                        BAD_CAST Rf_translateCharUTF8(STRING_ELT(value, i))
+                    ),
+                    "Could not write MARCXML controlfield value."
+                );
+                STREAM_APPEND_STEP(
+                    xmlTextWriterEndElement(writer),
+                    "Could not close MARCXML controlfield."
+                );
+                continue;
+            }
+
+            STREAM_APPEND_STEP(
+                xmlTextWriterStartElement(writer, BAD_CAST "datafield"),
+                "Could not start MARCXML datafield."
+            );
+            datafield_open = 1;
+            STREAM_APPEND_STEP(
+                xmlTextWriterWriteAttribute(
+                    writer,
+                    BAD_CAST "tag",
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(tag, i))
+                ),
+                "Could not write MARCXML datafield tag."
+            );
+            STREAM_APPEND_STEP(
+                xmlTextWriterWriteAttribute(
+                    writer,
+                    BAD_CAST "ind1",
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(ind1, i))
+                ),
+                "Could not write MARCXML ind1."
+            );
+            STREAM_APPEND_STEP(
+                xmlTextWriterWriteAttribute(
+                    writer,
+                    BAD_CAST "ind2",
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(ind2, i))
+                ),
+                "Could not write MARCXML ind2."
+            );
+        }
+
+        if (strcmp(type, "datafield") == 0) {
+            STREAM_APPEND_STEP(
+                xmlTextWriterStartElement(writer, BAD_CAST "subfield"),
+                "Could not start MARCXML subfield."
+            );
+            STREAM_APPEND_STEP(
+                xmlTextWriterWriteAttribute(
+                    writer,
+                    BAD_CAST "code",
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(subfield_code, i))
+                ),
+                "Could not write MARCXML subfield code."
+            );
+            STREAM_APPEND_STEP(
+                xmlTextWriterWriteString(
+                    writer,
+                    BAD_CAST Rf_translateCharUTF8(STRING_ELT(value, i))
+                ),
+                "Could not write MARCXML subfield value."
+            );
+            STREAM_APPEND_STEP(
+                xmlTextWriterEndElement(writer),
+                "Could not close MARCXML subfield."
+            );
+        }
+    }
+
+    if (datafield_open) {
+        STREAM_APPEND_STEP(
+            xmlTextWriterEndElement(writer),
+            "Could not close MARCXML datafield."
+        );
+    }
+    if (record_open) {
+        STREAM_APPEND_STEP(
+            xmlTextWriterEndElement(writer),
+            "Could not close MARCXML record."
+        );
+    }
+
+    state->last_record_id = INTEGER(record_id)[n - 1];
+#undef STREAM_APPEND_STEP
+    return R_NilValue;
+
+stream_append_fail:
+#undef STREAM_APPEND_STEP
+    Rf_error("%s", failure ? failure : "Native MARCXML stream writer failed.");
+    return R_NilValue;
+}
+
+SEXP C_marcxml_stream_writer_close(SEXP ext) {
+    marcxml_stream_writer *state = get_stream_writer(ext);
+    xmlTextWriterPtr writer = state->writer;
+    const char *failure = NULL;
+
+#define STREAM_CLOSE_STEP(call, message) do { \
+    if ((call) < 0) { failure = (message); goto stream_close_fail; } \
+} while (0)
+
+    STREAM_CLOSE_STEP(
+        xmlTextWriterEndElement(writer),
+        "Could not close MARCXML collection."
+    );
+    STREAM_CLOSE_STEP(
+        xmlTextWriterEndDocument(writer),
+        "Could not finish native MARCXML document."
+    );
+    STREAM_CLOSE_STEP(
+        xmlTextWriterFlush(writer),
+        "Could not flush native MARCXML document."
+    );
+
+    xmlFreeTextWriter(writer);
+    state->writer = NULL;
+    R_Free(state);
+    R_ClearExternalPtr(ext);
+#undef STREAM_CLOSE_STEP
+    return R_NilValue;
+
+stream_close_fail:
+    xmlFreeTextWriter(writer);
+    state->writer = NULL;
+    R_Free(state);
+    R_ClearExternalPtr(ext);
+#undef STREAM_CLOSE_STEP
+    Rf_error("%s", failure ? failure : "Native MARCXML stream writer failed to close.");
+    return R_NilValue;
+}
+
 SEXP C_marcxml_parse_records(SEXP texts, SEXP ids) {
     if (TYPEOF(texts) != STRSXP || TYPEOF(ids) != INTSXP ||
         XLENGTH(texts) != XLENGTH(ids)) Rf_error("Invalid native MARCXML inputs.");
@@ -1805,6 +2509,47 @@ SEXP C_marcxml_parse_records(SEXP texts, SEXP ids) {
     memset(state.docs, 0, (size_t)n * sizeof(xmlDocPtr));
     return R_ExecWithCleanup(parse_body, &state, cleanup, &state);
 }
+
+SEXP C_marcxml_xml10_invalid(SEXP value) {
+    if (TYPEOF(value) != STRSXP)
+        Rf_error("Native XML 1.0 validation requires a character vector.");
+
+    R_xlen_t n = XLENGTH(value);
+    SEXP out = PROTECT(Rf_allocVector(LGLSXP, n));
+    int *invalid = LOGICAL(out);
+
+    for (R_xlen_t i = 0; i < n; ++i) {
+        SEXP elt = STRING_ELT(value, i);
+        invalid[i] = 0;
+
+        if (elt == NA_STRING)
+            continue;
+
+        const unsigned char *p =
+            (const unsigned char *)Rf_translateCharUTF8(elt);
+
+        if (!xmlCheckUTF8(p)) {
+            invalid[i] = 1;
+            continue;
+        }
+
+        while (*p != '\0') {
+            int len = 4;
+            int ch = xmlGetUTF8Char(p, &len);
+
+            if (ch < 0 || len <= 0 || !xmlIsCharQ((unsigned int)ch)) {
+                invalid[i] = 1;
+                break;
+            }
+
+            p += len;
+        }
+    }
+
+    UNPROTECT(1);
+    return out;
+}
+
 static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_plan_open", (DL_FUNC)&C_marcxml_plan_open, 3},
     {"C_marcxml_plan_info", (DL_FUNC)&C_marcxml_plan_info, 1},
@@ -1817,6 +2562,11 @@ static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_reader_open", (DL_FUNC)&C_marcxml_reader_open, 1},
     {"C_marcxml_reader_next", (DL_FUNC)&C_marcxml_reader_next, 2},
     {"C_marcxml_reader_close", (DL_FUNC)&C_marcxml_reader_close, 1},
+    {"C_marcxml_write_collection", (DL_FUNC)&C_marcxml_write_collection, 3},
+    {"C_marcxml_stream_writer_open", (DL_FUNC)&C_marcxml_stream_writer_open, 2},
+    {"C_marcxml_stream_writer_append", (DL_FUNC)&C_marcxml_stream_writer_append, 2},
+    {"C_marcxml_stream_writer_close", (DL_FUNC)&C_marcxml_stream_writer_close, 1},
+    {"C_marcxml_xml10_invalid", (DL_FUNC)&C_marcxml_xml10_invalid, 1},
     {NULL, NULL, 0}
 };
 void attribute_visible R_init_marcxmlr(DllInfo *dll) {

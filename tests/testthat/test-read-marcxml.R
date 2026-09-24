@@ -152,7 +152,7 @@ test_that("sequential chunk sizes do not change results", {
 test_that("the public API remains deliberately small", {
   expect_setequal(
     getNamespaceExports("marcxmlr"),
-    c("read_marcxml", "marcxml_to_parquet")
+    c("read_marcxml", "marcxml_to_parquet", "diagnose_canonical", "write_marcxml")
   )
 
   expect_identical(formals(read_marcxml)$workers, 1L)
