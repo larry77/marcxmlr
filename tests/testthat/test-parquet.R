@@ -243,6 +243,7 @@ test_that("parallel conversion can be enabled explicitly", {
   output <- tempfile("parallel-marcxml-output-")
   on.exit(unlink(output, recursive = TRUE), add = TRUE)
   reference <- read_marcxml(example_marcxml_file())
+  previous <- future::plan()
 
   marcxml_to_parquet(
     example_marcxml_file(),
@@ -252,6 +253,7 @@ test_that("parallel conversion can be enabled explicitly", {
     chunk_records = 1L,
     verbose = FALSE
   )
+  expect_true(isTRUE(all.equal(future::plan(), previous)))
 
   files <- list.files(output, pattern = "\\.parquet$", full.names = TRUE)
   streamed <- purrr::map(files, arrow::read_parquet) |>

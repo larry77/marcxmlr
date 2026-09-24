@@ -199,25 +199,24 @@ read_marcxml <- function(
     chunk_records = chunk_records
   )
 
-  if (effective_workers == 1L) {
-    parsed_chunks <- purrr::map(record_chunks, function(record_ids) {
-      .parse_marcxml_text_chunk(
-        record_texts,
-        record_ids,
-        source_file = file
-      )
-    })
+  parallelize <- effective_workers > 1L
 
-    return(.bind_marcxml_results(parsed_chunks))
+  if (parallelize) {
+    .require_parallel_packages()
+    with(
+      future::plan(
+        future.mirai::mirai_multisession,
+        workers = effective_workers
+      ),
+      local = TRUE
+    )
   }
 
-  .require_parallel_packages()
-  previous_plan <- future::plan(
-    future.mirai::mirai_multisession,
-    workers = effective_workers
-  )
-  on.exit(future::plan(previous_plan), add = TRUE)
-  shared_record_texts <- mori::share(record_texts)
+  shared_record_texts <- if (parallelize) {
+    mori::share(record_texts)
+  } else {
+    record_texts
+  }
 
   parsed_chunks <- purrr::map(record_chunks, function(record_ids) {
     .parse_marcxml_text_chunk(
@@ -226,7 +225,7 @@ read_marcxml <- function(
       source_file = file
     )
   }) |>
-    futurize::futurize()
+    futurize::futurize(when = parallelize)
 
   .bind_marcxml_results(parsed_chunks)
 }

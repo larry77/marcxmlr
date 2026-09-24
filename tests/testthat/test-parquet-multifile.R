@@ -187,12 +187,14 @@ test_that("file-level parallel conversion matches sequential multi-file conversi
     workers = 1L,
     verbose = FALSE
   )
+  previous <- future::plan()
   marcxml_to_parquet(
     inputs,
     output_dir = parallel_output,
     workers = 2L,
     verbose = FALSE
   )
+  expect_true(isTRUE(all.equal(future::plan(), previous)))
 
   read_dataset_parts <- function(path) {
     purrr::map(

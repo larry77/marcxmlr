@@ -21,6 +21,8 @@ RoxygenNote: 7.3.3
 Depends:
     R (>= 4.1.0)
 Imports:
+    future (>= 1.69.0),
+    futurize,
     purrr (>= 1.0.0),
     rlang,
     stats,
@@ -29,9 +31,7 @@ Imports:
 Suggests:
     arrow,
     dplyr,
-    future (>= 1.69.0),
     future.mirai,
-    futurize,
     furrr,
     mori,
     testthat (>= 3.0.0),

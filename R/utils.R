@@ -204,9 +204,7 @@
 
 .require_parallel_packages <- function() {
   required <- c(
-    "future",
     "future.mirai",
-    "futurize",
     "furrr",
     "mori"
   )
@@ -236,9 +234,7 @@
   if (workers > 1L) {
     packages <- c(
       packages,
-      "future",
       "future.mirai",
-      "futurize",
       "furrr",
       "mori"
     )

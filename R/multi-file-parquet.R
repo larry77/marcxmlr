@@ -428,11 +428,12 @@
   }
 
   if (effective_workers > 1L) {
-    old_plan <- future::plan()
-    on.exit(future::plan(old_plan), add = TRUE)
-    future::plan(
-      future.mirai::mirai_multisession,
-      workers = effective_workers
+    with(
+      future::plan(
+        future.mirai::mirai_multisession,
+        workers = effective_workers
+      ),
+      local = TRUE
     )
 
     # File-level parallelism needs deterministic record-id ranges before
