@@ -45,6 +45,9 @@ Records are written in ascending \code{record_id} order. Within each record,
 \code{field_order} and \code{subfield_order} determine field and subfield ordering.
 The occurrence columns are diagnostics only and are not used to construct
 the XML.
+
+Use \code{\link[=diagnose_canonical]{diagnose_canonical()}} to inspect structural errors and warning-level
+coordinate issues without writing an XML file.
 }
 \examples{
 example_file <- system.file(
@@ -53,4 +56,13 @@ example_file <- system.file(
 x <- read_marcxml(example_file)
 out <- tempfile(fileext = ".xml")
 write_marcxml(x, out)
+
+shard_dir <- tempfile("marcxmlr-shards-")
+dir.create(shard_dir)
+shard_stem <- file.path(shard_dir, "catalogue.xml")
+write_marcxml(x, shard_stem, records_per_file = 1)
+unlink(shard_dir, recursive = TRUE)
+}
+\seealso{
+\code{\link[=diagnose_canonical]{diagnose_canonical()}}
 }

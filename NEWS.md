@@ -1,3 +1,31 @@
+# marcxmlr 0.2.1.9000
+
+* Add `diagnose_canonical()` for checking whether the canonical 11-column
+  representation is structurally safe to serialize. Structural ambiguity is
+  reported as an error, while stale or renumberable analytical coordinates are
+  reported as warnings.
+* Add `write_marcxml()` as the inverse operation for the canonical
+  representation. Untouched canonical data round-trips through MARCXML while
+  preserving MARC record semantics, repeated fields and subfields, indicators,
+  values, and source ordering. Incidental XML serialization details are not
+  reconstructed.
+* Use native libxml2 `xmlTextWriter` serialization for the production writer,
+  while retaining the R/xml2 implementation as a semantic reference in tests.
+* Add deterministic record-count sharding through `records_per_file`. Each
+  shard is an independent MARCXML collection, records are never split across
+  files, and staged publication avoids leaving partial output families after a
+  serialization failure.
+* Extend `write_marcxml()` to Arrow `Dataset` and lazy `arrow_dplyr_query`
+  inputs. Lazy inputs are consumed incrementally in bounded batches while
+  preserving complete MARC record boundaries.
+* Optimize canonical diagnostics and the lazy Arrow writer hot path, including
+  native XML 1.0 character validation.
+* In development tests on the 40,000-record GPO sample (2,143,952 canonical
+  rows), the lazy Arrow writer completed in about 14--15 seconds with
+  warning-level checks enabled and about 9 seconds with `check = FALSE`, while
+  reproducing the canonical representation exactly after rereading. These are
+  machine/input-specific development measurements, not performance guarantees.
+
 # marcxmlr 0.2.1
 
 * Improve portability of native parsing fallbacks by treating native

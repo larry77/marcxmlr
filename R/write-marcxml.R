@@ -365,6 +365,9 @@
 #' The occurrence columns are diagnostics only and are not used to construct
 #' the XML.
 #'
+#' Use [diagnose_canonical()] to inspect structural errors and warning-level
+#' coordinate issues without writing an XML file.
+#'
 #' @param x A data frame or tibble containing the canonical 11-column
 #'   `marcxmlr` representation, or an Arrow `Dataset` / lazy
 #'   `arrow_dplyr_query` with the same columns. Arrow inputs require the
@@ -385,6 +388,8 @@
 #'
 #' @return Invisibly, a character vector containing the output path or paths.
 #'
+#' @seealso [diagnose_canonical()]
+#'
 #' @export
 #'
 #' @examples
@@ -394,6 +399,12 @@
 #' x <- read_marcxml(example_file)
 #' out <- tempfile(fileext = ".xml")
 #' write_marcxml(x, out)
+#'
+#' shard_dir <- tempfile("marcxmlr-shards-")
+#' dir.create(shard_dir)
+#' shard_stem <- file.path(shard_dir, "catalogue.xml")
+#' write_marcxml(x, shard_stem, records_per_file = 1)
+#' unlink(shard_dir, recursive = TRUE)
 write_marcxml <- function(
   x,
   file,
