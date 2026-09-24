@@ -1,4 +1,4 @@
-# marcxmlr 0.2.1.9000
+# marcxmlr 0.3.0
 
 * Add `diagnose_canonical()` for checking whether the canonical 11-column
   representation is structurally safe to serialize. Structural ambiguity is
