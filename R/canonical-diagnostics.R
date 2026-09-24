@@ -121,44 +121,9 @@
 }
 
 .writer_xml10_invalid <- function(value) {
-  out <- rep(FALSE, length(value))
-  idx <- which(!is.na(value))
-
-  if (length(idx) == 0L) {
-    return(out)
-  }
-
-  text <- enc2utf8(value[idx])
-  char_length <- suppressWarnings(nchar(text, type = "chars", allowNA = TRUE))
-  bad <- is.na(char_length)
-  valid <- !bad
-
-  if (any(valid)) {
-    text_valid <- text[valid]
-    bad[valid] <-
-      grepl(
-        "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]",
-        text_valid,
-        perl = TRUE,
-        useBytes = TRUE
-      ) |
-      grepl(
-        intToUtf8(0xFFFE),
-        text_valid,
-        fixed = TRUE,
-        useBytes = TRUE
-      ) |
-      grepl(
-        intToUtf8(0xFFFF),
-        text_valid,
-        fixed = TRUE,
-        useBytes = TRUE
-      )
-  }
-
-  out[idx] <- bad
-  out
+  .Call(C_marcxml_xml10_invalid, value)
 }
+
 
 #' Diagnose a canonical MARC representation
 #'

@@ -28,6 +28,7 @@
 
   arrow::Scanner$create(
     x,
+    projection = .writer_canonical_columns,
     use_threads = FALSE,
     batch_size = .writer_arrow_batch_size()
   )$ToRecordBatchReader()
@@ -349,14 +350,46 @@
       previous_stream_id
     )
 
-    rows <- rows[, .writer_canonical_columns, drop = FALSE]
-    combined <- if (is.null(carry)) rows else rbind(carry, rows)
-    combined_id <- as.integer(combined$record_id)
-    last_id <- combined_id[[length(combined_id)]]
-    trailing <- combined_id == last_id
+    if (!is.null(carry)) {
+      carry_id <- as.integer(carry$record_id[[1L]])
 
-    complete <- combined[!trailing, , drop = FALSE]
-    carry <- combined[trailing, , drop = FALSE]
+      if (record_id[[1L]] == carry_id) {
+        different <- which(record_id != carry_id)
+
+        if (length(different) == 0L) {
+          # One unusually large record spans this entire scanner batch. In
+          # that rare case the record itself is the bounded-memory unit, so
+          # extend only the carry record and wait for the next batch.
+          carry <- rbind(carry, rows)
+          next
+        }
+
+        prefix_n <- different[[1L]] - 1L
+        if (prefix_n > 0L) {
+          carry <- rbind(
+            carry,
+            rows[seq_len(prefix_n), , drop = FALSE]
+          )
+          write_complete(carry)
+
+          keep <- seq.int(prefix_n + 1L, nrow(rows))
+          rows <- rows[keep, , drop = FALSE]
+          record_id <- record_id[keep]
+        } else {
+          write_complete(carry)
+        }
+      } else {
+        write_complete(carry)
+      }
+
+      carry <- NULL
+    }
+
+    last_id <- record_id[[length(record_id)]]
+    trailing <- record_id == last_id
+
+    complete <- rows[!trailing, , drop = FALSE]
+    carry <- rows[trailing, , drop = FALSE]
     write_complete(complete)
   }
 

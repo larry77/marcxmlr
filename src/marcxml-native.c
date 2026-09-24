@@ -7,6 +7,8 @@
 #include <libxml/tree.h>
 #include <libxml/xmlreader.h>
 #include <libxml/xmlwriter.h>
+#include <libxml/chvalid.h>
+#include <libxml/xmlstring.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -2507,6 +2509,47 @@ SEXP C_marcxml_parse_records(SEXP texts, SEXP ids) {
     memset(state.docs, 0, (size_t)n * sizeof(xmlDocPtr));
     return R_ExecWithCleanup(parse_body, &state, cleanup, &state);
 }
+
+SEXP C_marcxml_xml10_invalid(SEXP value) {
+    if (TYPEOF(value) != STRSXP)
+        Rf_error("Native XML 1.0 validation requires a character vector.");
+
+    R_xlen_t n = XLENGTH(value);
+    SEXP out = PROTECT(Rf_allocVector(LGLSXP, n));
+    int *invalid = LOGICAL(out);
+
+    for (R_xlen_t i = 0; i < n; ++i) {
+        SEXP elt = STRING_ELT(value, i);
+        invalid[i] = 0;
+
+        if (elt == NA_STRING)
+            continue;
+
+        const unsigned char *p =
+            (const unsigned char *)Rf_translateCharUTF8(elt);
+
+        if (!xmlCheckUTF8(p)) {
+            invalid[i] = 1;
+            continue;
+        }
+
+        while (*p != '\0') {
+            int len = 4;
+            int ch = xmlGetUTF8Char(p, &len);
+
+            if (ch < 0 || len <= 0 || !xmlIsCharQ((unsigned int)ch)) {
+                invalid[i] = 1;
+                break;
+            }
+
+            p += len;
+        }
+    }
+
+    UNPROTECT(1);
+    return out;
+}
+
 static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_plan_open", (DL_FUNC)&C_marcxml_plan_open, 3},
     {"C_marcxml_plan_info", (DL_FUNC)&C_marcxml_plan_info, 1},
@@ -2523,6 +2566,7 @@ static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_stream_writer_open", (DL_FUNC)&C_marcxml_stream_writer_open, 2},
     {"C_marcxml_stream_writer_append", (DL_FUNC)&C_marcxml_stream_writer_append, 2},
     {"C_marcxml_stream_writer_close", (DL_FUNC)&C_marcxml_stream_writer_close, 1},
+    {"C_marcxml_xml10_invalid", (DL_FUNC)&C_marcxml_xml10_invalid, 1},
     {NULL, NULL, 0}
 };
 void attribute_visible R_init_marcxmlr(DllInfo *dll) {

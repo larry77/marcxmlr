@@ -191,6 +191,18 @@ test_that("XML 1.0 forbidden characters are structural errors", {
   expect_identical(issue$subfield_order[[1L]], 1L)
 })
 
+test_that("XML 1.0 noncharacters are structural errors", {
+  x <- canonical_writer_fixture()
+  idx <- which(x$record_id == 1L & x$field_order == 2L)[[1L]]
+
+  for (codepoint in c(0xFFFE, 0xFFFF)) {
+    x$value[[idx]] <- intToUtf8(codepoint)
+    expect_true(
+      "invalid_xml_character" %in% diagnose_canonical(x)$code
+    )
+  }
+})
+
 test_that("XML metacharacters remain valid canonical text", {
   x <- canonical_writer_fixture()
   idx <- which(x$record_id == 1L & x$field_order == 2L)[[1L]]
