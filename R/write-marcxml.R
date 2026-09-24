@@ -353,7 +353,9 @@
 
 #' Write a canonical MARC representation as MARCXML
 #'
-#' Serialize an in-memory canonical `marcxmlr` representation to MARCXML.
+#' Serialize a canonical `marcxmlr` representation to MARCXML. In-memory
+#' data frames use the direct in-memory path; Arrow Datasets and lazy Arrow
+#' queries are consumed incrementally in bounded batches.
 #' MARC record structure and values are preserved, but incidental XML
 #' serialization details such as indentation, namespace-prefix spelling,
 #' comments, entity spelling, and the original XML declaration are not.
@@ -364,7 +366,10 @@
 #' the XML.
 #'
 #' @param x A data frame or tibble containing the canonical 11-column
-#'   `marcxmlr` representation.
+#'   `marcxmlr` representation, or an Arrow `Dataset` / lazy
+#'   `arrow_dplyr_query` with the same columns. Arrow inputs require the
+#'   optional `arrow` package and must present complete record groups in
+#'   non-decreasing `record_id` order.
 #' @param file Output XML path. When `records_per_file` is finite, this path is
 #'   used as the stem for deterministic shard names such as
 #'   `catalogue-00001.xml`. Existing target files are not overwritten. Output
@@ -397,6 +402,16 @@ write_marcxml <- function(
   records_per_file = Inf
 ) {
   .writer_validate_args(file, check, pretty, records_per_file)
+
+  if (.writer_is_arrow_source(x)) {
+    return(.writer_write_arrow(
+      x,
+      file = file,
+      check = check,
+      pretty = pretty,
+      records_per_file = records_per_file
+    ))
+  }
 
   diagnostics <- .writer_diagnose_impl(
     x,

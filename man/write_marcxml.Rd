@@ -8,7 +8,10 @@ write_marcxml(x, file, check = TRUE, pretty = TRUE, records_per_file = Inf)
 }
 \arguments{
 \item{x}{A data frame or tibble containing the canonical 11-column
-\code{marcxmlr} representation.}
+\code{marcxmlr} representation, or an Arrow \code{Dataset} / lazy
+\code{arrow_dplyr_query} with the same columns. Arrow inputs require the
+optional \code{arrow} package and must present complete record groups in
+non-decreasing \code{record_id} order.}
 
 \item{file}{Output XML path. When \code{records_per_file} is finite, this path is
 used as the stem for deterministic shard names such as
@@ -30,7 +33,9 @@ numbered collection shards and never splits a record.}
 Invisibly, a character vector containing the output path or paths.
 }
 \description{
-Serialize an in-memory canonical \code{marcxmlr} representation to MARCXML.
+Serialize a canonical \code{marcxmlr} representation to MARCXML. In-memory
+data frames use the direct in-memory path; Arrow Datasets and lazy Arrow
+queries are consumed incrementally in bounded batches.
 MARC record structure and values are preserved, but incidental XML
 serialization details such as indentation, namespace-prefix spelling,
 comments, entity spelling, and the original XML declaration are not.
