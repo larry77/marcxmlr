@@ -104,29 +104,60 @@
     identical(as.integer(x), as.integer(expected))
 }
 
-.writer_xml10_string_ok <- function(value) {
-  if (is.na(value)) {
-    return(TRUE)
+.writer_rank_within_key <- function(key) {
+  n <- length(key)
+  if (n == 0L) {
+    return(integer())
   }
 
-  codepoints <- tryCatch(
-    utf8ToInt(enc2utf8(value)),
-    warning = function(cnd) NA_integer_,
-    error = function(cnd) NA_integer_
-  )
+  ord <- order(key, method = "radix")
+  sorted_key <- key[ord]
+  starts <- c(TRUE, sorted_key[-1L] != sorted_key[-n])
+  sizes <- diff(c(which(starts), n + 1L))
 
-  if (anyNA(codepoints)) {
-    return(FALSE)
+  ranked <- integer(n)
+  ranked[ord] <- sequence(sizes)
+  ranked
+}
+
+.writer_xml10_invalid <- function(value) {
+  out <- rep(FALSE, length(value))
+  idx <- which(!is.na(value))
+
+  if (length(idx) == 0L) {
+    return(out)
   }
 
-  all(
-    codepoints == 9L |
-      codepoints == 10L |
-      codepoints == 13L |
-      (codepoints >= 32L & codepoints <= 55295L) |
-      (codepoints >= 57344L & codepoints <= 65533L) |
-      (codepoints >= 65536L & codepoints <= 1114111L)
-  )
+  text <- enc2utf8(value[idx])
+  char_length <- suppressWarnings(nchar(text, type = "chars", allowNA = TRUE))
+  bad <- is.na(char_length)
+  valid <- !bad
+
+  if (any(valid)) {
+    text_valid <- text[valid]
+    bad[valid] <-
+      grepl(
+        "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]",
+        text_valid,
+        perl = TRUE,
+        useBytes = TRUE
+      ) |
+      grepl(
+        intToUtf8(0xFFFE),
+        text_valid,
+        fixed = TRUE,
+        useBytes = TRUE
+      ) |
+      grepl(
+        intToUtf8(0xFFFF),
+        text_valid,
+        fixed = TRUE,
+        useBytes = TRUE
+      )
+  }
+
+  out[idx] <- bad
+  out
 }
 
 #' Diagnose a canonical MARC representation
@@ -366,39 +397,53 @@ diagnose_canonical <- function(x) {
     )
   }
 
-  for (i in seq_len(nrow(x))) {
-    xml_columns <- switch(
-      x$field_type[[i]],
-      leader = "value",
-      controlfield = c("tag", "value"),
-      datafield = c("tag", "value", "subfield_code", "ind1", "ind2")
-    )
+  xml_bad <- list(
+    tag = .writer_xml10_invalid(x$tag),
+    value = .writer_xml10_invalid(x$value),
+    subfield_code = .writer_xml10_invalid(x$subfield_code),
+    ind1 = .writer_xml10_invalid(x$ind1),
+    ind2 = .writer_xml10_invalid(x$ind2)
+  )
 
-    bad_columns <- xml_columns[!vapply(
+  xml_bad_rows <-
+    xml_bad$value |
+    (!is_leader & xml_bad$tag) |
+    (is_data & (
+      xml_bad$subfield_code | xml_bad$ind1 | xml_bad$ind2
+    ))
+
+  for (i in which(xml_bad_rows)) {
+    xml_columns <- if (is_leader[[i]]) {
+      "value"
+    } else if (is_data[[i]]) {
+      c("tag", "value", "subfield_code", "ind1", "ind2")
+    } else {
+      c("tag", "value")
+    }
+
+    bad_columns <- xml_columns[vapply(
       xml_columns,
-      function(nm) .writer_xml10_string_ok(x[[nm]][[i]]),
+      function(nm) xml_bad[[nm]][[i]],
       logical(1)
     )]
 
-    if (length(bad_columns) > 0L) {
-      issues <- .writer_add_issue(
-        issues,
-        "error",
-        "invalid_xml_character",
-        sprintf(
-          paste0(
-            "Record %d field_order %d contains text that cannot be represented ",
-            "safely in UTF-8 XML 1.0 in column(s): %s."
-          ),
-          record_id[[i]],
-          field_order[[i]],
-          paste(bad_columns, collapse = ", ")
+    issues <- .writer_add_issue(
+      issues,
+      "error",
+      "invalid_xml_character",
+      sprintf(
+        paste0(
+          "Record %d field_order %d contains text that cannot be represented ",
+          "safely in UTF-8 XML 1.0 in column(s): %s."
         ),
-        record_id = record_id[[i]],
-        field_order = field_order[[i]],
-        subfield_order = if (is_data[[i]]) subfield_order[[i]] else NA_integer_
-      )
-    }
+        record_id[[i]],
+        field_order[[i]],
+        paste(bad_columns, collapse = ", ")
+      ),
+      record_id = record_id[[i]],
+      field_order = field_order[[i]],
+      subfield_order = if (is_data[[i]]) subfield_order[[i]] else NA_integer_
+    )
   }
 
   if (.writer_has_errors(issues)) {
@@ -406,56 +451,157 @@ diagnose_canonical <- function(x) {
   }
 
   record_ids <- sort(unique(record_id))
+  n_records <- length(record_ids)
+  record_index <- match(record_id, record_ids)
 
-  for (rid in record_ids) {
-    idx_record <- which(record_id == rid)
-    leader_rows <- idx_record[is_leader[idx_record]]
+  leader_counts <- tabulate(record_index[is_leader], nbins = n_records)
+  leader_rows <- which(is_leader)
+  leader_row_by_record <- rep(NA_integer_, n_records)
+  if (length(leader_rows) > 0L) {
+    leader_row_by_record[record_index[leader_rows]] <- leader_rows
+  }
 
-    if (length(leader_rows) != 1L) {
-      issues <- .writer_add_issue(
-        issues,
-        "error",
-        "leader_count",
-        sprintf(
-          "Record %d must contain exactly one leader row; found %d.",
-          rid,
-          length(leader_rows)
-        ),
-        record_id = rid
-      )
-    } else if (field_order[leader_rows] != 0L) {
+  bad_leader_count <- which(leader_counts != 1L)
+  for (record_pos in bad_leader_count) {
+    rid <- record_ids[[record_pos]]
+    issues <- .writer_add_issue(
+      issues,
+      "error",
+      "leader_count",
+      sprintf(
+        "Record %d must contain exactly one leader row; found %d.",
+        rid,
+        leader_counts[[record_pos]]
+      ),
+      record_id = rid
+    )
+  }
+
+  one_leader <- which(leader_counts == 1L)
+  if (length(one_leader) > 0L) {
+    leader_idx <- leader_row_by_record[one_leader]
+    bad_leader_order <- one_leader[field_order[leader_idx] != 0L]
+
+    for (record_pos in bad_leader_order) {
+      rid <- record_ids[[record_pos]]
+      idx <- leader_row_by_record[[record_pos]]
       issues <- .writer_add_issue(
         issues,
         "error",
         "leader_order",
         sprintf("Record %d leader must have `field_order = 0`.", rid),
         record_id = rid,
-        field_order = field_order[leader_rows]
-      )
-    }
-
-    if (any(!is_leader[idx_record] & field_order[idx_record] == 0L)) {
-      issues <- .writer_add_issue(
-        issues,
-        "error",
-        "field_order_zero_reserved",
-        sprintf("Record %d uses `field_order = 0` for a non-leader field.", rid),
-        record_id = rid,
-        field_order = 0L
+        field_order = field_order[[idx]]
       )
     }
   }
 
-  field_key <- paste(record_id, field_order, sep = "\034")
-  field_groups <- split(seq_len(nrow(x)), field_key, drop = TRUE)
+  zero_non_leader_records <- unique(record_id[!is_leader & field_order == 0L])
+  zero_non_leader_records <- sort(zero_non_leader_records)
+  for (rid in zero_non_leader_records) {
+    issues <- .writer_add_issue(
+      issues,
+      "error",
+      "field_order_zero_reserved",
+      sprintf("Record %d uses `field_order = 0` for a non-leader field.", rid),
+      record_id = rid,
+      field_order = 0L
+    )
+  }
 
-  for (idx in field_groups) {
-    rid <- record_id[idx[[1L]]]
-    order_value <- field_order[idx[[1L]]]
-    types <- unique(x$field_type[idx])
-    tags <- unique(x$tag[idx])
+  # Build one ordered structural index and reuse it for all group-level checks.
+  # This avoids repeated full-table scans and thousands of tiny split/data-frame
+  # operations for large canonical representations.
+  subfield_sort <- ifelse(is_data, subfield_order, 0L)
+  row_order <- order(
+    record_id,
+    field_order,
+    subfield_sort,
+    seq_len(nrow(x)),
+    method = "radix"
+  )
 
-    if (length(types) != 1L) {
+  record_sorted <- record_id[row_order]
+  field_order_sorted <- field_order[row_order]
+  subfield_order_sorted <- subfield_order[row_order]
+  type_sorted <- x$field_type[row_order]
+  tag_sorted <- x$tag[row_order]
+  ind1_sorted <- x$ind1[row_order]
+  ind2_sorted <- x$ind2[row_order]
+
+  n_rows <- length(row_order)
+  new_field_group <- c(
+    TRUE,
+    record_sorted[-1L] != record_sorted[-n_rows] |
+      field_order_sorted[-1L] != field_order_sorted[-n_rows]
+  )
+  group_id_sorted <- cumsum(new_field_group)
+  group_starts <- which(new_field_group)
+  group_ends <- c(group_starts[-1L] - 1L, n_rows)
+  group_sizes <- group_ends - group_starts + 1L
+  group_first_rows <- row_order[group_starts]
+  n_groups <- length(group_starts)
+
+  group_record <- record_id[group_first_rows]
+  group_field_order <- field_order[group_first_rows]
+  group_type <- x$field_type[group_first_rows]
+  group_tag <- x$tag[group_first_rows]
+  group_ind1 <- x$ind1[group_first_rows]
+  group_ind2 <- x$ind2[group_first_rows]
+
+  type_conflict <- tabulate(
+    group_id_sorted[type_sorted != group_type[group_id_sorted]],
+    nbins = n_groups
+  ) > 0L
+  tag_conflict <- tabulate(
+    group_id_sorted[tag_sorted != group_tag[group_id_sorted]],
+    nbins = n_groups
+  ) > 0L
+
+  group_is_data <- group_type == "datafield"
+  valid_type_group <- !type_conflict
+  data_rows_sorted <- group_is_data[group_id_sorted] &
+    valid_type_group[group_id_sorted]
+
+  indicator_conflict_rows <- data_rows_sorted & (
+    ind1_sorted != group_ind1[group_id_sorted] |
+      ind2_sorted != group_ind2[group_id_sorted]
+  )
+  indicator_conflict <- tabulate(
+    group_id_sorted[indicator_conflict_rows],
+    nbins = n_groups
+  ) > 0L
+
+  same_group_as_previous <- c(
+    FALSE,
+    group_id_sorted[-1L] == group_id_sorted[-n_rows]
+  )
+  duplicate_subfield_rows <- data_rows_sorted &
+    same_group_as_previous &
+    !is.na(subfield_order_sorted) &
+    subfield_order_sorted == c(NA_integer_, subfield_order_sorted[-n_rows])
+  duplicate_subfield_order <- tabulate(
+    group_id_sorted[duplicate_subfield_rows],
+    nbins = n_groups
+  ) > 0L
+
+  multiple_scalar_rows <- valid_type_group &
+    !group_is_data &
+    group_sizes != 1L
+
+  bad_groups <- which(
+    type_conflict |
+      tag_conflict |
+      indicator_conflict |
+      duplicate_subfield_order |
+      multiple_scalar_rows
+  )
+
+  for (group_id in bad_groups) {
+    rid <- group_record[[group_id]]
+    order_value <- group_field_order[[group_id]]
+
+    if (type_conflict[[group_id]]) {
       issues <- .writer_add_issue(
         issues,
         "error",
@@ -471,7 +617,7 @@ diagnose_canonical <- function(x) {
       next
     }
 
-    if (length(tags) != 1L) {
+    if (tag_conflict[[group_id]]) {
       issues <- .writer_add_issue(
         issues,
         "error",
@@ -486,9 +632,8 @@ diagnose_canonical <- function(x) {
       )
     }
 
-    if (types[[1L]] == "datafield") {
-      if (length(unique(x$ind1[idx])) != 1L ||
-          length(unique(x$ind2[idx])) != 1L) {
+    if (group_is_data[[group_id]]) {
+      if (indicator_conflict[[group_id]]) {
         issues <- .writer_add_issue(
           issues,
           "error",
@@ -503,7 +648,7 @@ diagnose_canonical <- function(x) {
         )
       }
 
-      if (anyDuplicated(subfield_order[idx])) {
+      if (duplicate_subfield_order[[group_id]]) {
         issues <- .writer_add_issue(
           issues,
           "error",
@@ -517,7 +662,7 @@ diagnose_canonical <- function(x) {
           field_order = order_value
         )
       }
-    } else if (length(idx) != 1L) {
+    } else if (multiple_scalar_rows[[group_id]]) {
       issues <- .writer_add_issue(
         issues,
         "error",
@@ -526,8 +671,8 @@ diagnose_canonical <- function(x) {
           "Record %d field_order %d represents a %s but contains %d rows.",
           rid,
           order_value,
-          types[[1L]],
-          length(idx)
+          group_type[[group_id]],
+          group_sizes[[group_id]]
         ),
         record_id = rid,
         field_order = order_value
@@ -535,35 +680,46 @@ diagnose_canonical <- function(x) {
     }
   }
 
+  group_record_start <- c(
+    TRUE,
+    group_record[-1L] != group_record[-n_groups]
+  )
+  record_group_starts <- which(group_record_start)
+  record_group_ends <- c(record_group_starts[-1L] - 1L, n_groups)
+
   if (!.writer_has_errors(issues)) {
-    for (rid in record_ids) {
-      field_orders_rid <- sort(unique(field_order[record_id == rid]))
-      seen_datafield <- FALSE
+    for (record_pos in seq_len(n_records)) {
+      groups <- record_group_starts[[record_pos]]:record_group_ends[[record_pos]]
+      types <- group_type[groups]
+      first_data <- match("datafield", types, nomatch = 0L)
 
-      for (order_value in field_orders_rid) {
-        idx <- which(record_id == rid & field_order == order_value)
-        field_type_value <- x$field_type[[idx[[1L]]]]
-
-        if (field_type_value == "datafield") {
-          seen_datafield <- TRUE
-        } else if (field_type_value == "controlfield" && seen_datafield) {
-          issues <- .writer_add_issue(
-            issues,
-            "error",
-            "field_type_order",
-            sprintf(
-              paste0(
-                "Record %d has a controlfield after a datafield in `field_order`; ",
-                "MARCXML requires controlfields to precede datafields."
-              ),
-              rid
-            ),
-            record_id = rid,
-            field_order = order_value
-          )
-          break
-        }
+      if (first_data == 0L) {
+        next
       }
+
+      later_control <- which(
+        seq_along(types) > first_data & types == "controlfield"
+      )
+      if (length(later_control) == 0L) {
+        next
+      }
+
+      group_id <- groups[[later_control[[1L]]]]
+      rid <- group_record[[group_id]]
+      issues <- .writer_add_issue(
+        issues,
+        "error",
+        "field_type_order",
+        sprintf(
+          paste0(
+            "Record %d has a controlfield after a datafield in `field_order`; ",
+            "MARCXML requires controlfields to precede datafields."
+          ),
+          rid
+        ),
+        record_id = rid,
+        field_order = group_field_order[[group_id]]
+      )
     }
   }
 
@@ -607,11 +763,84 @@ diagnose_canonical <- function(x) {
     )
   }
 
-  for (rid in record_ids) {
-    idx_record <- which(record_id == rid)
-    field_orders <- sort(unique(field_order[idx_record]))
+  field_order_warning <- logical(n_records)
+  for (record_pos in seq_len(n_records)) {
+    groups <- record_group_starts[[record_pos]]:record_group_ends[[record_pos]]
+    observed <- group_field_order[groups]
+    field_order_warning[[record_pos]] <- !identical(
+      observed,
+      seq.int(0L, length(observed) - 1L)
+    )
+  }
 
-    if (!identical(field_orders, seq.int(0L, length(field_orders) - 1L))) {
+  occurrence_key <- paste(
+    group_record,
+    group_type,
+    group_tag,
+    sep = "\034"
+  )
+  expected_field_occurrence <- .writer_rank_within_key(occurrence_key)
+
+  if (!is.numeric(x$field_occurrence)) {
+    field_occurrence_warning <- rep(TRUE, n_groups)
+  } else {
+    observed <- x$field_occurrence[row_order]
+    expected <- expected_field_occurrence[group_id_sorted]
+    bad <- is.na(observed) |
+      !is.finite(observed) |
+      observed <= 0 |
+      abs(observed) > .Machine$integer.max |
+      observed != floor(observed)
+    ok <- !bad
+    bad[ok] <- as.integer(observed[ok]) != expected[ok]
+    field_occurrence_warning <- tabulate(
+      group_id_sorted[bad],
+      nbins = n_groups
+    ) > 0L
+  }
+
+  position_within_group <- sequence(group_sizes)
+  subfield_order_bad <- data_rows_sorted &
+    subfield_order_sorted != position_within_group
+  subfield_order_warning <- tabulate(
+    group_id_sorted[subfield_order_bad],
+    nbins = n_groups
+  ) > 0L
+
+  data_positions <- which(data_rows_sorted)
+  subfield_occurrence_warning <- rep(FALSE, n_groups)
+  if (length(data_positions) > 0L) {
+    subfield_key <- paste(
+      group_id_sorted[data_positions],
+      x$subfield_code[row_order[data_positions]],
+      sep = "\034"
+    )
+    expected_subfield_occurrence <- .writer_rank_within_key(subfield_key)
+
+    if (!is.numeric(x$subfield_occurrence)) {
+      subfield_occurrence_warning[group_id_sorted[data_positions]] <- TRUE
+    } else {
+      observed <- x$subfield_occurrence[row_order[data_positions]]
+      bad <- is.na(observed) |
+        !is.finite(observed) |
+        observed <= 0 |
+        abs(observed) > .Machine$integer.max |
+        observed != floor(observed)
+      ok <- !bad
+      bad[ok] <- as.integer(observed[ok]) != expected_subfield_occurrence[ok]
+      bad_groups_subfield <- unique(group_id_sorted[data_positions[bad]])
+      subfield_occurrence_warning[bad_groups_subfield] <- TRUE
+    }
+  }
+
+  any_group_warning <- field_occurrence_warning |
+    subfield_order_warning |
+    subfield_occurrence_warning
+
+  for (record_pos in seq_len(n_records)) {
+    rid <- record_ids[[record_pos]]
+
+    if (field_order_warning[[record_pos]]) {
       issues <- .writer_add_issue(
         issues,
         "warning",
@@ -627,23 +856,13 @@ diagnose_canonical <- function(x) {
       )
     }
 
-    field_counts <- new.env(parent = emptyenv())
+    groups <- record_group_starts[[record_pos]]:record_group_ends[[record_pos]]
+    groups <- groups[any_group_warning[groups]]
 
-    for (order_value in field_orders) {
-      idx <- which(record_id == rid & field_order == order_value)
-      field_type <- x$field_type[idx[[1L]]]
-      tag <- x$tag[idx[[1L]]]
-      occurrence_key <- paste(field_type, tag, sep = "\034")
+    for (group_id in groups) {
+      order_value <- group_field_order[[group_id]]
 
-      old <- if (exists(occurrence_key, field_counts, inherits = FALSE)) {
-        get(occurrence_key, field_counts, inherits = FALSE)
-      } else {
-        0L
-      }
-      expected <- old + 1L
-      assign(occurrence_key, expected, field_counts)
-
-      if (!.writer_occurrence_matches(x$field_occurrence[idx], rep(expected, length(idx)))) {
+      if (field_occurrence_warning[[group_id]]) {
         issues <- .writer_add_issue(
           issues,
           "warning",
@@ -658,15 +877,11 @@ diagnose_canonical <- function(x) {
         )
       }
 
-      if (field_type != "datafield") {
+      if (!group_is_data[[group_id]]) {
         next
       }
 
-      idx <- idx[order(subfield_order[idx])]
-      observed_order <- subfield_order[idx]
-      expected_order <- seq_along(idx)
-
-      if (!identical(observed_order, as.integer(expected_order))) {
+      if (subfield_order_warning[[group_id]]) {
         issues <- .writer_add_issue(
           issues,
           "warning",
@@ -684,24 +899,7 @@ diagnose_canonical <- function(x) {
         )
       }
 
-      expected_occurrence <- integer(length(idx))
-      subfield_counts <- new.env(parent = emptyenv())
-
-      for (j in seq_along(idx)) {
-        code <- x$subfield_code[[idx[[j]]]]
-        old <- if (exists(code, subfield_counts, inherits = FALSE)) {
-          get(code, subfield_counts, inherits = FALSE)
-        } else {
-          0L
-        }
-        expected_occurrence[[j]] <- old + 1L
-        assign(code, expected_occurrence[[j]], subfield_counts)
-      }
-
-      if (!.writer_occurrence_matches(
-        x$subfield_occurrence[idx],
-        expected_occurrence
-      )) {
+      if (subfield_occurrence_warning[[group_id]]) {
         issues <- .writer_add_issue(
           issues,
           "warning",
