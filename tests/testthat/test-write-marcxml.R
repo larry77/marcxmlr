@@ -294,7 +294,13 @@ test_that("staged shard writing removes partial output after a later failure", {
   paths <- .writer_shard_paths(file.path(dir, "catalogue.xml"), length(chunks))
 
   calls <- 0L
-  failing_writer <- function(x, record_ids, file, pretty) {
+  failing_writer <- function(
+    x,
+    record_ids,
+    file,
+    pretty,
+    compression_level = 0L
+  ) {
     calls <<- calls + 1L
     if (calls == 2L) {
       stop("simulated later shard failure", call. = FALSE)

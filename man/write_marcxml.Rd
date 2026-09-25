@@ -4,7 +4,14 @@
 \alias{write_marcxml}
 \title{Write a canonical MARC representation as MARCXML}
 \usage{
-write_marcxml(x, file, check = TRUE, pretty = TRUE, records_per_file = Inf)
+write_marcxml(
+  x,
+  file,
+  check = TRUE,
+  pretty = TRUE,
+  records_per_file = Inf,
+  compression_level = 6L
+)
 }
 \arguments{
 \item{x}{A data frame or tibble containing the canonical 11-column
@@ -28,6 +35,10 @@ writing. Structurally ambiguous input is always rejected, including when
 \item{records_per_file}{Maximum number of complete MARC records per output
 file. The default, \code{Inf}, writes one collection. A finite value writes
 numbered collection shards and never splits a record.}
+
+\item{compression_level}{Gzip compression level from 1 to 9. The default is
+\code{6}. It is used only when \code{file} ends in \code{.gz}; other filenames are
+written as uncompressed XML.}
 }
 \value{
 Invisibly, a character vector containing the output path or paths.

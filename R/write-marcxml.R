@@ -46,7 +46,13 @@
   )
 }
 
-.writer_validate_args <- function(file, check, pretty, records_per_file) {
+.writer_validate_args <- function(
+  file,
+  check,
+  pretty,
+  records_per_file,
+  compression_level
+) {
   if (!is.character(file) || length(file) != 1L || is.na(file) || file == "") {
     rlang::abort(
       "`file` must be one non-empty path.",
@@ -85,6 +91,22 @@
     )
   }
 
+  valid_compression_level <-
+    is.numeric(compression_level) &&
+    length(compression_level) == 1L &&
+    !is.na(compression_level) &&
+    is.finite(compression_level) &&
+    compression_level == floor(compression_level) &&
+    compression_level >= 1 &&
+    compression_level <= 9
+
+  if (!valid_compression_level) {
+    rlang::abort(
+      "`compression_level` must be a whole number from 1 to 9.",
+      class = "marcxmlr_argument_error"
+    )
+  }
+
   if (!dir.exists(dirname(file))) {
     rlang::abort(
       sprintf("Output directory does not exist: %s", dirname(file)),
@@ -95,21 +117,41 @@
   invisible(NULL)
 }
 
-.writer_shard_paths <- function(file, n_shards) {
+.writer_filename_parts <- function(file) {
   filename <- basename(file)
+
+  if (grepl("\\.xml\\.gz$", filename, ignore.case = TRUE)) {
+    stem <- sub("\\.xml\\.gz$", "", filename, ignore.case = TRUE)
+    extension <- substr(filename, nchar(stem) + 1L, nchar(filename))
+    return(list(stem = stem, extension = extension))
+  }
+
   extension_start <- regexpr("\\.[^.]*$", filename)[[1L]]
 
   if (extension_start <= 1L) {
-    stem <- filename
-    extension <- ""
+    list(stem = filename, extension = "")
   } else {
-    stem <- substr(filename, 1L, extension_start - 1L)
-    extension <- substr(filename, extension_start, nchar(filename))
+    list(
+      stem = substr(filename, 1L, extension_start - 1L),
+      extension = substr(filename, extension_start, nchar(filename))
+    )
   }
+}
+
+.writer_output_compression <- function(file, compression_level) {
+  if (grepl("\\.gz$", file, ignore.case = TRUE)) {
+    as.integer(compression_level)
+  } else {
+    0L
+  }
+}
+
+.writer_shard_paths <- function(file, n_shards) {
+  parts <- .writer_filename_parts(file)
 
   file.path(
     dirname(file),
-    sprintf("%s-%05d%s", stem, seq_len(n_shards), extension)
+    sprintf("%s-%05d%s", parts$stem, seq_len(n_shards), parts$extension)
   )
 }
 
@@ -237,14 +279,21 @@
   )
 }
 
-.writer_write_collection_native <- function(x, record_ids, file, pretty) {
+.writer_write_collection_native <- function(
+  x,
+  record_ids,
+  file,
+  pretty,
+  compression_level = 0L
+) {
   columns <- .writer_native_columns(x, record_ids)
 
   .Call(
     C_marcxml_write_collection,
     columns,
     file,
-    pretty
+    pretty,
+    as.integer(compression_level)
   )
 
   invisible(file)
@@ -274,6 +323,7 @@
   chunks,
   paths,
   pretty,
+  compression_level = 6L,
   write_collection = .writer_write_collection
 ) {
   staged <- .writer_temp_output_paths(paths)
@@ -299,7 +349,11 @@
       x,
       record_ids = chunks[[i]],
       file = staged[[i]],
-      pretty = pretty
+      pretty = pretty,
+      compression_level = .writer_output_compression(
+        paths[[i]],
+        compression_level
+      )
     )
   }
 
@@ -385,6 +439,9 @@
 #' @param records_per_file Maximum number of complete MARC records per output
 #'   file. The default, `Inf`, writes one collection. A finite value writes
 #'   numbered collection shards and never splits a record.
+#' @param compression_level Gzip compression level from 1 to 9. The default is
+#'   `6`. It is used only when `file` ends in `.gz`; other filenames are
+#'   written as uncompressed XML.
 #'
 #' @return Invisibly, a character vector containing the output path or paths.
 #'
@@ -410,9 +467,16 @@ write_marcxml <- function(
   file,
   check = TRUE,
   pretty = TRUE,
-  records_per_file = Inf
+  records_per_file = Inf,
+  compression_level = 6L
 ) {
-  .writer_validate_args(file, check, pretty, records_per_file)
+  .writer_validate_args(
+    file,
+    check,
+    pretty,
+    records_per_file,
+    compression_level
+  )
 
   if (.writer_is_arrow_source(x)) {
     return(.writer_write_arrow(
@@ -420,7 +484,8 @@ write_marcxml <- function(
       file = file,
       check = check,
       pretty = pretty,
-      records_per_file = records_per_file
+      records_per_file = records_per_file,
+      compression_level = compression_level
     ))
   }
 
@@ -459,7 +524,8 @@ write_marcxml <- function(
     x,
     chunks = chunks,
     paths = paths,
-    pretty = pretty
+    pretty = pretty,
+    compression_level = compression_level
   )
 
   invisible(paths)

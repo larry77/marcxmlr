@@ -123,8 +123,17 @@
   rbind(current, warnings)
 }
 
-.writer_native_stream_open <- function(file, pretty) {
-  .Call(C_marcxml_stream_writer_open, file, pretty)
+.writer_native_stream_open <- function(
+  file,
+  pretty,
+  compression_level = 0L
+) {
+  .Call(
+    C_marcxml_stream_writer_open,
+    file,
+    pretty,
+    as.integer(compression_level)
+  )
 }
 
 .writer_native_stream_append <- function(handle, x, record_ids) {
@@ -138,18 +147,12 @@
 }
 
 .writer_stream_shard_path <- function(file, index) {
-  filename <- basename(file)
-  extension_start <- regexpr("\\.[^.]*$", filename)[[1L]]
+  parts <- .writer_filename_parts(file)
 
-  if (extension_start <= 1L) {
-    stem <- filename
-    extension <- ""
-  } else {
-    stem <- substr(filename, 1L, extension_start - 1L)
-    extension <- substr(filename, extension_start, nchar(filename))
-  }
-
-  file.path(dirname(file), sprintf("%s-%05d%s", stem, index, extension))
+  file.path(
+    dirname(file),
+    sprintf("%s-%05d%s", parts$stem, index, parts$extension)
+  )
 }
 
 .writer_commit_staged_paths <- function(staged, paths) {
@@ -201,7 +204,8 @@
   file,
   check,
   pretty,
-  records_per_file
+  records_per_file,
+  compression_level
 ) {
   missing_columns <- .writer_arrow_missing_columns(x)
   if (length(missing_columns) > 0L) {
@@ -251,7 +255,11 @@
     stage <- .writer_temp_output_paths(target)
     paths <<- c(paths, target)
     staged <<- c(staged, stage)
-    handle <<- .writer_native_stream_open(stage, pretty)
+    handle <<- .writer_native_stream_open(
+      stage,
+      pretty,
+      .writer_output_compression(target, compression_level)
+    )
     records_in_shard <<- 0L
     invisible(NULL)
   }

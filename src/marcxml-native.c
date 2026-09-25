@@ -1913,18 +1913,28 @@ static void validate_writer_columns(SEXP columns) {
     }
 }
 
-SEXP C_marcxml_write_collection(SEXP columns, SEXP path, SEXP pretty) {
+SEXP C_marcxml_write_collection(
+    SEXP columns,
+    SEXP path,
+    SEXP pretty,
+    SEXP compression
+) {
     validate_writer_columns(columns);
 
     if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1 ||
         STRING_ELT(path, 0) == NA_STRING ||
         TYPEOF(pretty) != LGLSXP || XLENGTH(pretty) != 1 ||
-        LOGICAL(pretty)[0] == NA_LOGICAL) {
+        LOGICAL(pretty)[0] == NA_LOGICAL ||
+        TYPEOF(compression) != INTSXP || XLENGTH(compression) != 1 ||
+        INTEGER(compression)[0] == NA_INTEGER ||
+        INTEGER(compression)[0] < 0 || INTEGER(compression)[0] > 9) {
         Rf_error("Invalid native MARCXML writer arguments.");
     }
 
     const char *file = Rf_translateCharUTF8(STRING_ELT(path, 0));
-    xmlTextWriterPtr writer = xmlNewTextWriterFilename(file, 0);
+    int compression_level = INTEGER(compression)[0];
+    xmlTextWriterPtr writer =
+        xmlNewTextWriterFilename(file, compression_level);
     if (!writer)
         Rf_error("Could not create native MARCXML output writer.");
 
@@ -2195,16 +2205,25 @@ static marcxml_stream_writer *get_stream_writer(SEXP ext) {
     return state;
 }
 
-SEXP C_marcxml_stream_writer_open(SEXP path, SEXP pretty) {
+SEXP C_marcxml_stream_writer_open(
+    SEXP path,
+    SEXP pretty,
+    SEXP compression
+) {
     if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1 ||
         STRING_ELT(path, 0) == NA_STRING ||
         TYPEOF(pretty) != LGLSXP || XLENGTH(pretty) != 1 ||
-        LOGICAL(pretty)[0] == NA_LOGICAL) {
+        LOGICAL(pretty)[0] == NA_LOGICAL ||
+        TYPEOF(compression) != INTSXP || XLENGTH(compression) != 1 ||
+        INTEGER(compression)[0] == NA_INTEGER ||
+        INTEGER(compression)[0] < 0 || INTEGER(compression)[0] > 9) {
         Rf_error("Invalid native MARCXML stream writer arguments.");
     }
 
     const char *file = Rf_translateCharUTF8(STRING_ELT(path, 0));
-    xmlTextWriterPtr writer = xmlNewTextWriterFilename(file, 0);
+    int compression_level = INTEGER(compression)[0];
+    xmlTextWriterPtr writer =
+        xmlNewTextWriterFilename(file, compression_level);
     if (!writer) {
         Rf_error("Could not create native MARCXML stream writer.");
     }
@@ -2562,8 +2581,8 @@ static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_reader_open", (DL_FUNC)&C_marcxml_reader_open, 1},
     {"C_marcxml_reader_next", (DL_FUNC)&C_marcxml_reader_next, 2},
     {"C_marcxml_reader_close", (DL_FUNC)&C_marcxml_reader_close, 1},
-    {"C_marcxml_write_collection", (DL_FUNC)&C_marcxml_write_collection, 3},
-    {"C_marcxml_stream_writer_open", (DL_FUNC)&C_marcxml_stream_writer_open, 2},
+    {"C_marcxml_write_collection", (DL_FUNC)&C_marcxml_write_collection, 4},
+    {"C_marcxml_stream_writer_open", (DL_FUNC)&C_marcxml_stream_writer_open, 3},
     {"C_marcxml_stream_writer_append", (DL_FUNC)&C_marcxml_stream_writer_append, 2},
     {"C_marcxml_stream_writer_close", (DL_FUNC)&C_marcxml_stream_writer_close, 1},
     {"C_marcxml_xml10_invalid", (DL_FUNC)&C_marcxml_xml10_invalid, 1},
