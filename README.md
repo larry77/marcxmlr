@@ -5,27 +5,14 @@
 
 `marcxmlr` helps bring MARC 21 data into ordinary R data workflows.
 
-MARC 21 is a widely used format for representing bibliographic and related
-metadata. In many data-exchange workflows, MARC 21 records are distributed as
-MARCXML: an XML representation in which records contain ordered fields,
-indicators and subfields, and where both fields and subfields may repeat.
+MARC 21 records are commonly exchanged as MARCXML, whose hierarchical and
+repetitive structure does not naturally fit the rectangular data model usually
+used for analysis in R and the tidyverse.
 
-This structure is well suited to representing MARC records, but it is less
-convenient for analytical work. An analyst using R and the tidyverse usually
-wants data in a rectangular form that can be filtered, grouped, joined,
-reshaped and summarized with familiar tools such as `dplyr`. MARCXML does not
-naturally fit that model: simply flattening the XML can lose information about
-repeated fields, repeated subfields, indicators and the relationships among
-them.
-
-`marcxmlr` provides a bridge between these two worlds. It reads MARCXML into a
-tidy rectangular representation while preserving the structure needed to
-distinguish the different parts of a MARC record. The resulting data can be
-analysed and manipulated with ordinary R tools.
-
-It can also perform the reverse operation. A structurally valid representation
-can be written back to MARCXML, making it possible to select or modify MARC data
-in R and then export the result again in the established MARCXML format.
+`marcxmlr` converts MARCXML into a tidy representation that preserves MARC
+structure, allowing the data to be inspected, selected and modified with
+ordinary R tools. The resulting representation can also be written back to
+MARCXML.
 
 A typical workflow is therefore:
 
@@ -43,56 +30,42 @@ write_marcxml()
 MARCXML
 ```
 
-The exact tabular representation used by `marcxmlr` is introduced later, once
-the basic workflow and the reason for preserving MARC structure are clear.
+Part I explains why this representation is needed and how it preserves the
+structure of MARC records.
 
-## Stable CRAN release and GitHub development version
+## Installation
 
-The CRAN badge above reports the version currently available from CRAN. CRAN is
-the stable release channel.
+CRAN currently provides `marcxmlr` 0.2.1. That version predates MARCXML writing.
 
-This README documents the current GitHub `main` branch. GitHub development can
-therefore move ahead of CRAN between releases. The tagged
-[`v0.3.0`](https://github.com/larry77/marcxmlr/tree/v0.3.0) tag is an
-immutable snapshot of version 0.3.0, while `main` uses the conventional
-`.9000` development-version suffix.
-
-Install the stable CRAN release with:
+Install the CRAN version with:
 
 ```r
 install.packages("marcxmlr")
 ```
 
-Install the current GitHub development version with:
+To use `write_marcxml()` and the complete round trip workflow described in this
+README, install the current GitHub version:
 
 ```r
 # install.packages("pak")
 pak::pak("larry77/marcxmlr")
 ```
 
-The round-trip functionality described below was introduced in version 0.3.0.
-If the CRAN badge shows an earlier version, install the GitHub version to use
-`write_marcxml()`, `diagnose_canonical()`, and the round-trip examples in this
-README.
-
-Source installation of the GitHub version requires a C toolchain and libxml2
-development headers/libraries. On Debian/Ubuntu these are normally provided by
+Source installation from GitHub requires a C toolchain and libxml2 development
+headers and libraries. On Debian and Ubuntu these are normally provided by
 `r-base-dev` and `libxml2-dev`; Windows source builds use Rtools.
 
 # Part I: Using and understanding `marcxmlr`
 
 Part I explains the data model first and the R workflow second. Readers who
-already know MARC 21 can skip the short MARC introduction, but the discussion of
-flattening and the canonical representation is central to the package.
-
+already know MARC 21 can skip [MARC 21 and MARCXML](#marc-21-and-marcxml) and
+continue with [Why simple flattening loses information](#why-simple-flattening-loses-information).
+The discussion of flattening and [the canonical representation](#the-canonical-representation)
+is central to understanding the package.
 
 ## MARC 21, MARCXML and the tabular problem
 
 ### MARC 21 and MARCXML
-
-Readers who already work with MARC 21 and MARCXML can skip this subsection.
-The explanation of flattening that follows is important for understanding why
-`marcxmlr` uses its particular tabular representation.
 
 MARC means **MAchine Readable Cataloging**. MARC 21 is a family of communication formats used to represent and exchange bibliographic, authority, holdings, classification, and community information in machine readable form.
 
@@ -181,12 +154,10 @@ This is why one MARC record cannot safely be treated as one ordinary flat row wi
 This section defines the data contract used by all `marcxmlr` workflows. It is
 important even for readers who already know MARC 21 well.
 
+`marcxmlr` uses a long rectangular representation that makes MARC structure
+explicit instead of discarding it.
+
 ### The 11 columns
-
-This section defines the data contract used by all `marcxmlr` workflows.
-It is worth reading even for readers who already know MARC 21 well.
-
-`marcxmlr` solves this by using a long rectangular representation that makes MARC structure explicit instead of discarding it.
 
 Every result contains exactly these columns, in this order:
 
@@ -214,8 +185,10 @@ to identify field instances and reconstruct their order. Together with
 contain the information required to serialize the represented MARC structure.
 
 `field_occurrence` and `subfield_occurrence` are **derived analytical
-coordinates**. They are not strictly necessary to reconstruct MARCXML and
-`write_marcxml()` does not use them as the authoritative source of ordering.
+coordinates**. They are not strictly necessary to reconstruct MARCXML because
+their values can be derived from the structural ordering coordinates.
+`write_marcxml()` therefore does not use them as the authoritative source of
+ordering.
 
 They are included because repeated fields and repeated subfields are common in
 MARC, and explicit occurrence numbers make analytical work considerably easier.
@@ -226,8 +199,7 @@ For example, they let ordinary `dplyr` code refer directly to:
 
 They are therefore useful for filtering, grouping, joins, validation and
 reshaping even though they can be derived from the structural ordering
-coordinates. `diagnose_canonical()` treats stale or renumberable occurrence
-coordinates as analytical-coordinate issues rather than structural ambiguity.
+coordinates.
 
 For data fields, rows sharing the same `record_id` and `field_order` belong to
 the same MARC field instance. `subfield_order` preserves the order within that
@@ -388,27 +360,27 @@ diagnostics
 #> #   field_order <int>, subfield_order <int>
 ```
 
-An empty diagnostics tibble means that no structural or warning level issue was
-found.
+An empty diagnostics tibble means that no issue was found.
 
-When diagnostics are present, each row identifies the severity, a diagnostic
-code, a human readable message, and the relevant record or field position when
-available. An `error` identifies a structural problem that prevents safe
-serialization. A `warning` identifies an issue that deserves attention but does
-not necessarily make the represented MARC structure ambiguous. Typical warning
-level cases include stale or renumberable analytical coordinates.
+When diagnostics are present, each row reports a severity, a diagnostic code, a
+human readable message, and the relevant record or position when available.
 
-The distinction matters because `field_occurrence` and `subfield_occurrence`
-are useful analytical coordinates, but they are not the structural source of
-ordering used to reconstruct MARCXML.
+An `error` identifies a structural problem that prevents safe serialization. A
+`warning` identifies something that deserves attention but does not make the
+represented MARC structure ambiguous. For example, occurrence coordinates may
+be stale or renumberable even when the structural ordering remains clear.
 
-`write_marcxml()` performs structural checks before writing. Calling
-`diagnose_canonical()` explicitly is useful during analysis and editing because
-the diagnostics can be inspected before any output file is created.
+This distinction reflects the data model described above. `field_order` and
+`subfield_order` determine structural order, while `field_occurrence` and
+`subfield_occurrence` are derived analytical coordinates.
 
-`diagnose_canonical()` is not a complete MARC 21 content validator and it is not
-a replacement for schema validation. Its purpose is narrower: it checks whether
-the `marcxmlr` canonical representation is structurally safe to serialize.
+`write_marcxml()` performs the required structural checks itself before writing.
+Calling `diagnose_canonical()` explicitly is useful when data have been filtered
+or edited because the result can be inspected before any XML file is created.
+
+The function checks the structural contract required by `marcxmlr`. It is not a
+complete MARC 21 content validator and does not replace MARCXML schema
+validation.
 
 ### Select records and export them as MARCXML
 
@@ -418,11 +390,6 @@ result again as MARCXML:
 ```r
 selected <- marc |>
   filter(record_id == 1L)
-
-diagnose_canonical(selected)
-#> # A tibble: 0 × 6
-#> # ℹ 6 variables: severity <chr>, code <chr>, message <chr>, record_id <int>,
-#> #   field_order <int>, subfield_order <int>
 
 out <- tempfile(fileext = ".xml")
 write_marcxml(selected, out)
@@ -454,11 +421,6 @@ edited <- marc |>
     )
   )
 
-diagnose_canonical(edited)
-#> # A tibble: 0 × 6
-#> # ℹ 6 variables: severity <chr>, code <chr>, message <chr>, record_id <int>,
-#> #   field_order <int>, subfield_order <int>
-
 edited_xml <- tempfile(fileext = ".xml")
 write_marcxml(edited, edited_xml)
 
@@ -480,59 +442,51 @@ analysis: a specific repetition can be addressed directly with ordinary
 
 ### Query the canonical representation with `dplyr`
 
-Once parsed, the result is an ordinary tibble. No special query language is required.
+Once parsed, the canonical representation is an ordinary tibble. No special
+query language is required.
 
-The examples in this section use `dplyr`. Install it if necessary:
-
-```r
-install.packages("dplyr")
-```
-
-Then load it:
+The following examples use the complete Orwell record shown earlier. If that
+MARCXML example is saved as `orwell.xml`, read it once with:
 
 ```r
-library(dplyr)
+orwell <- read_marcxml("orwell.xml")
+
+dim(orwell)
+#> [1] 16 11
 ```
 
-#### Extract title statements
+#### Filter fields and subfields
+
+A title statement can be selected directly by MARC tag:
 
 ```r
 orwell |>
   filter(tag == "245") |>
   select(record_id, subfield_code, value)
+#> # A tibble: 2 × 3
+#>   record_id subfield_code value
+#>       <int> <chr>         <chr>
+#> 1         1 a             Nineteen eighty-four /
+#> 2         1 c             George Orwell.
 ```
 
-Output:
-
-```text
-# A tibble: 2 × 3
-  record_id subfield_code value
-      <int> <chr>         <chr>
-1         1 a             Nineteen eighty-four /
-2         1 c             George Orwell.
-```
-
-#### Extract main subject terms
+Occurrence coordinates make repeated fields equally easy to inspect:
 
 ```r
 orwell |>
   filter(tag == "650", subfield_code == "a") |>
   select(record_id, field_occurrence, value)
+#> # A tibble: 2 × 3
+#>   record_id field_occurrence value
+#>       <int>            <int> <chr>
+#> 1         1                1 Totalitarianism
+#> 2         1                2 Dystopias.
 ```
 
-Output:
+#### Keep a complete field when one subfield matches
 
-```text
-# A tibble: 2 × 3
-  record_id field_occurrence value
-      <int>            <int> <chr>
-1         1                1 Totalitarianism
-2         1                2 Dystopias.
-```
-
-#### Keep complete field instances when one subfield matches
-
-Grouping by `record_id` and `field_order` lets a condition select a complete MARC field rather than only the row that matched:
+Grouping by `record_id` and `field_order` lets a condition select the complete
+MARC field instance rather than only the row that matched:
 
 ```r
 orwell |>
@@ -540,8 +494,8 @@ orwell |>
   filter(
     any(
       tag == "650" &
-      subfield_code == "a" &
-      value == "Totalitarianism"
+        subfield_code == "a" &
+        value == "Totalitarianism"
     )
   ) |>
   ungroup() |>
@@ -552,21 +506,21 @@ orwell |>
     subfield_code,
     value
   )
+#> # A tibble: 2 × 5
+#>   record_id field_order tag   subfield_code value
+#>       <int>       <int> <chr> <chr>         <chr>
+#> 1         1           5 650   a             Totalitarianism
+#> 2         1           5 650   v             Fiction.
 ```
 
-Output:
+The condition matches only `$a Totalitarianism`, but the result also contains
+its associated `$v Fiction.` because both rows belong to the same `650` field
+instance.
 
-```text
-# A tibble: 2 × 5
-  record_id field_order tag   subfield_code value
-      <int>       <int> <chr> <chr>         <chr>
-1         1           5 650   a             Totalitarianism
-2         1           5 650   v             Fiction.
-```
+#### Reconstruct a convenient field view
 
-The condition matched only `$a Totalitarianism`, but the result contains both that row and its associated `$v Fiction.` because they belong to the same `650` field instance.
-
-#### Render complete data fields for inspection
+The preserved structure can also be used to create a compact field view for
+inspection:
 
 ```r
 orwell |>
@@ -580,27 +534,25 @@ orwell |>
     .groups = "drop"
   ) |>
   select(record_id, field_order, tag, field)
+#> # A tibble: 6 × 4
+#>   record_id field_order tag   field
+#>       <int>       <int> <chr> <chr>
+#> 1         1           2 100   $a Orwell, George, $d 1903-1950.
+#> 2         1           3 245   $a Nineteen eighty-four / $c George Orwell.
+#> 3         1           4 264   $a London : $b Secker & Warburg, $c 1949.
+#> 4         1           5 650   $a Totalitarianism $v Fiction.
+#> 5         1           6 650   $a Dystopias. $v Fiction.
+#> 6         1           7 856   $u https://example.org/1984 $y Full text $y Mirror
 ```
 
-Output:
+This simpler view is derived only after the canonical representation has
+preserved the original grouping.
 
-```text
-# A tibble: 6 × 4
-  record_id field_order tag   field
-      <int>       <int> <chr> <chr>
-1         1           2 100   $a Orwell, George, $d 1903-1950.
-2         1           3 245   $a Nineteen eighty-four / $c George Orwell.
-3         1           4 264   $a London : $b Secker & Warburg, $c 1949.
-4         1           5 650   $a Totalitarianism $v Fiction.
-5         1           6 650   $a Dystopias. $v Fiction.
-6         1           7 856   $u https://example.org/1984 $y Full text $y Mirror
-```
+#### Derive a simplified analytical table
 
-This produces a convenient field level view only after the canonical representation has already preserved the original grouping.
-
-#### Derive a simplified table when the analysis permits it
-
-For a particular task, you may decide that only one title and a set of subject headings matter:
+For a particular analysis, the full MARC structure may no longer be needed. For
+example, one title and a combined set of subject headings can be derived with
+ordinary `dplyr` operations:
 
 ```r
 titles <- orwell |>
@@ -621,22 +573,18 @@ subjects <- orwell |>
   )
 
 left_join(titles, subjects, by = "record_id")
-```
-
-Output:
-
-```text
-# A tibble: 1 × 3
-  record_id title                   subjects
-      <int> <chr>                   <chr>
-1         1 Nineteen eighty-four /  Totalitarianism ; Fiction. | Dystopias. ; Fiction.
+#> # A tibble: 1 × 3
+#>   record_id title                   subjects
+#>       <int> <chr>                   <chr>
+#> 1         1 Nineteen eighty-four /  Totalitarianism ; Fiction. | Dystopias. ; Fiction.
 ```
 
 The important asymmetry is:
 
 > **Canonical to simplified is easy. Simplified to canonical may be impossible.**
 
-`marcxmlr` therefore preserves structure at ingestion and lets the user decide what can safely be collapsed for a particular analytical purpose.
+`marcxmlr` therefore preserves structure first and lets the user decide what can
+safely be collapsed for a particular analytical purpose.
 
 ## Real data, large collections and performance
 
@@ -682,41 +630,68 @@ Output:
 
 The point is not that tag `245` is difficult to extract. The point is that the exact same representation remains safe when fields and subfields repeat in much less convenient records.
 
-### In memory work
+### Choose an in memory or Parquet workflow
 
-Use `read_marcxml()` when the XML document and the parsed result fit comfortably in memory:
+Both workflows use the same canonical representation. The practical difference
+is where that representation lives.
+
+Use `read_marcxml()` when the XML document and the parsed result fit comfortably
+in memory. The bundled example used above returns one ordinary tibble:
 
 ```r
-marc <- read_marcxml(
-  "records.xml",
-  workers = 1L
-)
+marc <- read_marcxml(source_xml)
+
+dim(marc)
+#> [1] 18 11
 ```
 
-The function accepts a MARCXML collection or a standalone record and returns the canonical 11 column tibble.
-
-`n_max` can restrict the number of records parsed, which is useful for previews and development:
+`n_max` can restrict parsing to the first records, which is useful for previews
+and development:
 
 ```r
 preview <- read_marcxml(
-  "records.xml",
-  n_max = 100L
+  source_xml,
+  n_max = 1L
 )
+
+unique(preview$record_id)
+#> [1] 1
 ```
 
-This is the simplest workflow and the best place to start.
+For much larger collections, materializing tens of millions of canonical rows
+as one tibble may be unnecessary. `marcxml_to_parquet()` writes the same schema
+to a directory of Parquet files while keeping normal working memory bounded by
+the configured processing batches.
 
-### Large collections with Parquet
-
-For larger collections, materializing tens of millions of canonical rows as one tibble may be unnecessary. `marcxml_to_parquet()` writes the same schema as a directory of Parquet files while keeping normal working memory bounded by the configured processing batches.
-
-To use the Parquet workflow, install the additional packages required for it:
+Install Arrow support if necessary:
 
 ```r
-install.packages(c("XML", "arrow"))
+install.packages("arrow")
 ```
 
-Single file:
+The same bundled MARCXML example can be converted to Parquet:
+
+```r
+out_dir <- tempfile()
+
+marcxml_to_parquet(
+  source_xml,
+  output_dir = out_dir,
+  workers = 1L
+)
+
+catalogue <- arrow::open_dataset(out_dir)
+
+catalogue |>
+  summarise(rows = n()) |>
+  collect()
+#> # A tibble: 1 × 1
+#>    rows
+#>   <int>
+#> 1    18
+```
+
+For a large single file, the pattern is the same:
 
 ```r
 marcxml_to_parquet(
@@ -726,7 +701,7 @@ marcxml_to_parquet(
 )
 ```
 
-Multiple files:
+For a catalogue already split across several files:
 
 ```r
 files <- sort(Sys.glob("data/catalogue/*.xml"))
@@ -740,13 +715,11 @@ marcxml_to_parquet(
 
 A glob pattern can also be supplied directly.
 
-To query the resulting dataset with Arrow and `dplyr`, install `dplyr` as shown earlier and then:
+The resulting dataset can be queried with Arrow and `dplyr` without first
+loading the complete canonical table into R:
 
 ```r
-library(arrow)
-library(dplyr)
-
-catalogue <- open_dataset("catalogue_parquet")
+catalogue <- arrow::open_dataset("catalogue_parquet")
 
 catalogue |>
   filter(tag == "650", subfield_code == "a") |>
@@ -755,7 +728,8 @@ catalogue |>
   collect()
 ```
 
-The result is an ordinary tibble with one row for each of the most frequent `650$a` values and a column named `n` containing the count. The actual terms and counts depend on the catalogue being queried.
+The result is an ordinary tibble containing up to twenty subject values and
+their counts. The actual values depend on the catalogue being queried:
 
 ```text
 # A tibble: up to 20 × 2
@@ -764,11 +738,15 @@ The result is an ordinary tibble with one row for each of the most frequent `650
   ...
 ```
 
-`open_dataset()` lets Arrow apply filters, projections, and aggregations before selected results are brought into R.
+Arrow can apply filters, projections, and aggregations before the selected
+result is brought into R.
 
 #### Global record identity across files
 
-When several MARCXML files are converted into one dataset, `marcxmlr` assigns globally contiguous `record_id` values in deterministic input file order. The result therefore behaves as one logical collection even when the physical source is split across many XML files.
+When several MARCXML files are converted into one dataset, `marcxmlr` assigns
+globally contiguous `record_id` values in deterministic input file order. The
+result therefore behaves as one logical collection even when the physical
+source is split across many XML files.
 
 Worker completion order does not change record identity.
 
@@ -777,16 +755,16 @@ Worker completion order does not change record identity.
 The main large scale development benchmark uses the U.S. Government Publishing
 Office public **All CGP Records (MARC XML)** dataset:
 
-<https://github.com/usgpo/cataloging-records-all-cgp-marcxml>
+https://github.com/usgpo/cataloging-records-all-cgp-marcxml
 
-One 40,000-record GPO file produced **2,143,952 canonical rows**. Development
+One 40,000 record GPO file produced **2,143,952 canonical rows**. Development
 measurements on the machines used for `marcxmlr` gave approximately:
 
 | Workflow | Input | Elapsed time |
 |---|---:|---:|
 | `read_marcxml()` | 40,000 records | about 6.5 s |
 | `marcxml_to_parquet()` | 40,000 records | about 8.4 s |
-| `write_marcxml()` from lazy Arrow, checks enabled | 2,143,952 rows | about 14-15 s |
+| `write_marcxml()` from lazy Arrow, checks enabled | 2,143,952 rows | about 14 to 15 s |
 | `write_marcxml()` from lazy Arrow, `check = FALSE` | 2,143,952 rows | about 9 s |
 
 A larger Parquet conversion over **27 GPO MARCXML files** contained
@@ -794,48 +772,20 @@ A larger Parquet conversion over **27 GPO MARCXML files** contained
 **100 seconds with 7 workers**.
 
 These are development measurements, not performance guarantees. Hardware,
-storage, R, libxml2 and Arrow versions all matter.
-
-A minimal in memory benchmark is:
-
-```r
-system.time({
-  x <- read_marcxml("gpo-40000.xml")
-})
-
-nrow(x)
-length(unique(x$record_id))
-```
-
-For an in memory write benchmark on the parsed tibble:
-
-```r
-system.time({
-  write_marcxml(x, "gpo-40000-roundtrip.xml")
-})
-```
-
-For collections that should stay out of one large R object:
-
-```r
-system.time({
-  marcxml_to_parquet(
-    "gpo-40000.xml",
-    output_dir = "gpo-parquet"
-  )
-})
-```
-
-Part II explains the native libxml2 implementation, bounded memory architecture,
-parallel execution and benchmark methodology.
+storage, R, libxml2, and Arrow versions all matter. Part II explains the native
+implementation, memory model, parallel execution, and benchmark methodology.
 
 # Part II: Under the hood: implementation and performance
 
-Part I is sufficient for using `marcxmlr`. This part explains how the package
-implements the same canonical representation across reading, large collection
-conversion, diagnostics, and MARCXML writing.
+Part I is sufficient for using `marcxmlr`. Part II explains how the package
+implements reading, Parquet conversion, structural checks, and MARCXML writing
+around the same canonical representation.
 
-## Three execution paths
+
+## Architecture
+
+The public workflows share one canonical representation but use different
+execution paths according to the direction and size of the data.
 
 The public workflows share one data model, but use different execution paths
 according to the direction and size of the data.
@@ -915,42 +865,41 @@ Output is staged before publication. Existing output is not silently
 overwritten, and a serialization failure does not publish a partial output
 family.
 
-## Diagnostics and serialization rules
+### Structural checks and serialization rules
 
-The writer reconstructs MARC structure from structural coordinates, especially
-`record_id`, `field_order`, and `subfield_order`, together with field types,
-tags, indicators, subfield codes, and values.
+Serialization is governed by the structural coordinates of the canonical
+representation. In particular, `record_id`, `field_order`, and
+`subfield_order`, together with field types, tags, indicators, subfield codes,
+and values, determine the MARC structure to be written.
 
-`field_occurrence` and `subfield_occurrence` are different. They are derived
-analytical coordinates. They make repeated MARC structure easy to select,
-group, join, inspect, and validate, but they are not the authoritative source
-of serialization order.
+`field_occurrence` and `subfield_occurrence` are derived analytical coordinates.
+They are useful for analysis, but they are not the authoritative source of
+serialization order.
 
-This distinction explains the behavior of `diagnose_canonical()`. Structural
-ambiguity is an error because the package cannot safely decide what MARC
-structure to write. Stale or renumberable analytical coordinates can instead be
-reported as warnings because the represented structure can still be
-unambiguous.
+This distinction also determines diagnostic severity. Structural ambiguity is
+an error because the writer cannot safely infer the intended MARC structure.
+Stale or renumberable occurrence coordinates can instead be warnings when the
+structural ordering remains unambiguous.
 
-Structural errors are enforced when writing. With `check = TRUE`,
-`write_marcxml()` also reports warning level diagnostics before serialization.
+`write_marcxml()` enforces structural errors before writing. With
+`check = TRUE`, it also reports warning level diagnostics.
 
-The diagnostics cover the structural contract needed by `marcxmlr`, including
+The checks cover the structural contract required by `marcxmlr`, including
 record and field organization, ordering information, indicators, required
 leader structure, duplicate structural positions, and XML 1.0 character
-validity.
+validity. They do not constitute complete MARC 21 content validation or
+MARCXML schema validation.
 
-They are not a complete MARC 21 content validator. The package does not claim
-that every coded value, cataloguing convention, or external MARC rule is valid
-merely because a canonical representation can be serialized safely.
-
-For an untouched canonical table, a read, write, read cycle preserves the
+For untouched canonical data, a read, write, read cycle preserves the
 represented MARC semantics: leaders, control fields, data field instances,
-indicators, subfields, repetition, values, and ordering. XML formatting details
-such as indentation, namespace prefix spelling, attribute order, and similar
-serialization choices are outside that contract.
+indicators, subfields, repetition, values, and ordering. XML formatting choices
+such as indentation, namespace prefix spelling, and attribute order are outside
+that contract.
 
-## Why the native implementation is fast
+
+## Native implementation and validation
+
+### Why the native implementation is fast
 
 A straightforward XML to table implementation in R can spend substantial time
 on repeated high level operations:
@@ -991,6 +940,22 @@ For large output, Parquet avoids forcing tens of millions of canonical rows
 into one R object. For large input to the writer, lazy Arrow input similarly
 avoids materializing an entire dataset solely to serialize it.
 
+### Reference implementations and tests
+
+The optimized native paths are the production performance paths, but independent
+implementations remain useful.
+
+The package retains R and XML based parsing paths where they are needed for
+compatibility and fallback behavior. The writer also retains an R and `xml2`
+reference implementation internally for semantic comparison in tests.
+
+These paths are valuable because optimized native code can be checked against
+an independently implemented result rather than merely against itself.
+
+The test suite compares native and reference behavior across repeated fields,
+repeated subfields, indicators, ordering, Unicode, XML metacharacters,
+streaming boundaries, sharding, failure behavior, and parallel execution.
+
 ## Parallelism and deterministic behavior
 
 Both reading and Parquet conversion default to sequential execution.
@@ -1025,22 +990,6 @@ benchmarks showed only modest gains from process level writer parallelism, while
 process transfer, memory use, repeated Arrow scans, and output coordination
 would make the design more complex. The lazy writer therefore remains a single
 pass bounded stream.
-
-## Compatibility and reference paths
-
-The optimized native paths are the production performance paths, but independent
-implementations remain useful.
-
-The package retains R and XML based parsing paths where they are needed for
-compatibility and fallback behavior. The writer also retains an R and `xml2`
-reference implementation internally for semantic comparison in tests.
-
-These paths are valuable because optimized native code can be checked against
-an independently implemented result rather than merely against itself.
-
-The test suite compares native and reference behavior across repeated fields,
-repeated subfields, indicators, ordering, Unicode, XML metacharacters,
-streaming boundaries, sharding, failure behavior, and parallel execution.
 
 ## Benchmark methodology
 
