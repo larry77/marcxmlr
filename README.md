@@ -67,7 +67,7 @@ is central to understanding the package.
 
 ### MARC 21 and MARCXML
 
-MARC means **MAchine Readable Cataloging**. MARC 21 is a family of communication formats used to represent and exchange bibliographic, authority, holdings, classification, and community information in machine readable form.
+MARC stands for **Machine Readable Cataloging**. MARC 21 is a family of communication formats used to represent and exchange bibliographic, authority, holdings, classification, and community information in machine readable form.
 
 A MARC record is not a conventional rectangular observation with one value for each variable. It is an ordered structured record. A bibliographic record may contain:
 
@@ -757,8 +757,8 @@ Office public **All CGP Records (MARC XML)** dataset:
 
 https://github.com/usgpo/cataloging-records-all-cgp-marcxml
 
-One 40,000 record GPO file produced **2,143,952 canonical rows**. Development
-measurements on the machines used for `marcxmlr` gave approximately:
+A GPO file containing **40,000 records** produced **2,143,952 canonical rows**.
+Development measurements on the machines used for `marcxmlr` gave approximately:
 
 | Workflow | Input | Elapsed time |
 |---|---:|---:|
@@ -767,7 +767,7 @@ measurements on the machines used for `marcxmlr` gave approximately:
 | `write_marcxml()` from lazy Arrow, checks enabled | 2,143,952 rows | about 14 to 15 s |
 | `write_marcxml()` from lazy Arrow, `check = FALSE` | 2,143,952 rows | about 9 s |
 
-A larger Parquet conversion over **27 GPO MARCXML files** contained
+A larger Parquet conversion over **27 GPO MARCXML files** processed
 **1,080,000 records** and produced **67,672,396 canonical rows** in about
 **100 seconds with 7 workers**.
 
