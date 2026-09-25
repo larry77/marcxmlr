@@ -232,6 +232,11 @@
     if (!is.null(handle)) {
       .writer_native_stream_close(handle)
       handle <<- NULL
+
+      i <- length(paths)
+      if (.writer_needs_gzip_fallback(paths[[i]])) {
+        .writer_gzip_staged_file(staged[[i]], compression_level)
+      }
     }
     invisible(NULL)
   }

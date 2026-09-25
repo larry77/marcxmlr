@@ -138,13 +138,86 @@
   }
 }
 
+.writer_native_has_zlib <- local({
+  available <- NULL
+
+  function() {
+    if (is.null(available)) {
+      available <<- isTRUE(.Call(C_marcxml_has_zlib))
+    }
+    available
+  }
+})
+
+.writer_is_gzip_target <- function(file) {
+  grepl("\\.gz$", file, ignore.case = TRUE)
+}
+
 .writer_output_compression <- function(file, compression_level) {
-  if (grepl("\\.gz$", file, ignore.case = TRUE)) {
+  if (.writer_is_gzip_target(file) && .writer_native_has_zlib()) {
     as.integer(compression_level)
   } else {
     0L
   }
 }
+
+.writer_needs_gzip_fallback <- function(file) {
+  .writer_is_gzip_target(file) && !.writer_native_has_zlib()
+}
+
+.writer_gzip_staged_file <- function(staged, compression_level) {
+  compressed <- tempfile(
+    pattern = paste0(".", basename(staged), ".gzip-"),
+    tmpdir = dirname(staged),
+    fileext = ".tmp"
+  )
+
+  input <- NULL
+  output <- NULL
+
+  on.exit({
+    if (!is.null(output)) {
+      try(close(output), silent = TRUE)
+    }
+    if (!is.null(input)) {
+      try(close(input), silent = TRUE)
+    }
+    if (file.exists(compressed)) {
+      unlink(compressed, force = TRUE)
+    }
+  }, add = TRUE)
+
+  input <- base::file(staged, open = "rb")
+  output <- base::gzfile(
+    compressed,
+    open = "wb",
+    compression = as.integer(compression_level)
+  )
+
+  repeat {
+    chunk <- readBin(input, what = "raw", n = 1024L * 1024L)
+    if (length(chunk) == 0L) {
+      break
+    }
+    writeBin(chunk, output)
+  }
+
+  close(output)
+  output <- NULL
+  close(input)
+  input <- NULL
+
+  unlink(staged, force = TRUE)
+  moved <- suppressWarnings(file.rename(compressed, staged))
+  if (!isTRUE(moved)) {
+    rlang::abort(
+      "Could not gzip staged MARCXML output.",
+      class = "marcxmlr_output_error"
+    )
+  }
+  invisible(staged)
+}
+
 
 .writer_shard_paths <- function(file, n_shards) {
   parts <- .writer_filename_parts(file)
@@ -355,6 +428,10 @@
         compression_level
       )
     )
+
+    if (.writer_needs_gzip_fallback(paths[[i]])) {
+      .writer_gzip_staged_file(staged[[i]], compression_level)
+    }
   }
 
   missing_staged <- staged[!file.exists(staged)]

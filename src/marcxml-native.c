@@ -1913,6 +1913,14 @@ static void validate_writer_columns(SEXP columns) {
     }
 }
 
+SEXP C_marcxml_has_zlib(void) {
+#ifdef LIBXML_ZLIB_ENABLED
+    return Rf_ScalarLogical(1);
+#else
+    return Rf_ScalarLogical(0);
+#endif
+}
+
 SEXP C_marcxml_write_collection(
     SEXP columns,
     SEXP path,
@@ -2581,6 +2589,7 @@ static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_reader_open", (DL_FUNC)&C_marcxml_reader_open, 1},
     {"C_marcxml_reader_next", (DL_FUNC)&C_marcxml_reader_next, 2},
     {"C_marcxml_reader_close", (DL_FUNC)&C_marcxml_reader_close, 1},
+    {"C_marcxml_has_zlib", (DL_FUNC)&C_marcxml_has_zlib, 0},
     {"C_marcxml_write_collection", (DL_FUNC)&C_marcxml_write_collection, 4},
     {"C_marcxml_stream_writer_open", (DL_FUNC)&C_marcxml_stream_writer_open, 3},
     {"C_marcxml_stream_writer_append", (DL_FUNC)&C_marcxml_stream_writer_append, 2},
