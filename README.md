@@ -657,25 +657,76 @@ library(dplyr)
 
 sandburg <- read_marcxml("data/loc/sandburg.xml")
 
+dim(sandburg)
+#> [1] 38 11
+```
+
+The complete record has the following canonical rectangular representation.
+For readability, `<blank>` denotes the actual one-character indicator value
+`" "` preserved by `marcxmlr`; it is distinct from `NA`, which means that
+indicators do not apply.
+
+| record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
+|---:|---|---|---|---|---:|---:|---|---|---:|---:|
+| 1 | leader | LDR | NA | 01142cam 2200301 a 4500 | 0 | 1 | NA | NA | NA | NA |
+| 1 | controlfield | 001 | NA | 92005291 | 1 | 1 | NA | NA | NA | NA |
+| 1 | controlfield | 003 | NA | DLC | 2 | 1 | NA | NA | NA | NA |
+| 1 | controlfield | 005 | NA | 19930521155141.9 | 3 | 1 | NA | NA | NA | NA |
+| 1 | controlfield | 008 | NA | `920219s1993    caua   j      000 0 eng` | 4 | 1 | NA | NA | NA | NA |
+| 1 | datafield | 010 | a | 92005291 | 5 | 1 | `<blank>` | `<blank>` | 1 | 1 |
+| 1 | datafield | 020 | a | 0152038655 : | 6 | 1 | `<blank>` | `<blank>` | 1 | 1 |
+| 1 | datafield | 020 | c | $15.95 | 6 | 1 | `<blank>` | `<blank>` | 2 | 1 |
+| 1 | datafield | 040 | a | DLC | 7 | 1 | `<blank>` | `<blank>` | 1 | 1 |
+| 1 | datafield | 040 | c | DLC | 7 | 1 | `<blank>` | `<blank>` | 2 | 1 |
+| 1 | datafield | 040 | d | DLC | 7 | 1 | `<blank>` | `<blank>` | 3 | 1 |
+| 1 | datafield | 042 | a | lcac | 8 | 1 | `<blank>` | `<blank>` | 1 | 1 |
+| 1 | datafield | 050 | a | PS3537.A618 | 9 | 1 | 0 | 0 | 1 | 1 |
+| 1 | datafield | 050 | b | A88 1993 | 9 | 1 | 0 | 0 | 2 | 1 |
+| 1 | datafield | 082 | a | 811/.52 | 10 | 1 | 0 | 0 | 1 | 1 |
+| 1 | datafield | 082 | 2 | 20 | 10 | 1 | 0 | 0 | 2 | 1 |
+| 1 | datafield | 100 | a | Sandburg, Carl, | 11 | 1 | 1 | `<blank>` | 1 | 1 |
+| 1 | datafield | 100 | d | 1878-1967. | 11 | 1 | 1 | `<blank>` | 2 | 1 |
+| 1 | datafield | 245 | a | Arithmetic / | 12 | 1 | 1 | 0 | 1 | 1 |
+| 1 | datafield | 245 | c | Carl Sandburg ; illustrated as an anamorphic adventure by Ted Rand. | 12 | 1 | 1 | 0 | 2 | 1 |
+| 1 | datafield | 250 | a | 1st ed. | 13 | 1 | `<blank>` | `<blank>` | 1 | 1 |
+| 1 | datafield | 260 | a | San Diego : | 14 | 1 | `<blank>` | `<blank>` | 1 | 1 |
+| 1 | datafield | 260 | b | Harcourt Brace Jovanovich, | 14 | 1 | `<blank>` | `<blank>` | 2 | 1 |
+| 1 | datafield | 260 | c | c1993. | 14 | 1 | `<blank>` | `<blank>` | 3 | 1 |
+| 1 | datafield | 300 | a | 1 v. (unpaged) : | 15 | 1 | `<blank>` | `<blank>` | 1 | 1 |
+| 1 | datafield | 300 | b | ill. (some col.) ; | 15 | 1 | `<blank>` | `<blank>` | 2 | 1 |
+| 1 | datafield | 300 | c | 26 cm. | 15 | 1 | `<blank>` | `<blank>` | 3 | 1 |
+| 1 | datafield | 500 | a | One Mylar sheet included in pocket. | 16 | 1 | `<blank>` | `<blank>` | 1 | 1 |
+| 1 | datafield | 520 | a | A poem about numbers and their characteristics. Features anamorphic, or distorted, drawings which can be restored to normal by viewing from a particular angle or by viewing the image's reflection in the provided Mylar cone. | 17 | 1 | `<blank>` | `<blank>` | 1 | 1 |
+| 1 | datafield | 650 | a | Arithmetic | 18 | 1 | `<blank>` | 0 | 1 | 1 |
+| 1 | datafield | 650 | x | Juvenile poetry. | 18 | 1 | `<blank>` | 0 | 2 | 1 |
+| 1 | datafield | 650 | a | Children's poetry, American. | 19 | 2 | `<blank>` | 0 | 1 | 1 |
+| 1 | datafield | 650 | a | Arithmetic | 20 | 3 | `<blank>` | 1 | 1 | 1 |
+| 1 | datafield | 650 | x | Poetry. | 20 | 3 | `<blank>` | 1 | 2 | 1 |
+| 1 | datafield | 650 | a | American poetry. | 21 | 4 | `<blank>` | 1 | 1 | 1 |
+| 1 | datafield | 650 | a | Visual perception. | 22 | 5 | `<blank>` | 1 | 1 | 1 |
+| 1 | datafield | 700 | a | Rand, Ted, | 23 | 1 | 1 | `<blank>` | 1 | 1 |
+| 1 | datafield | 700 | e | ill. | 23 | 1 | 1 | `<blank>` | 2 | 1 |
+
+A narrower query can then select only the title field:
+
+```r
 sandburg |>
   filter(tag == "245") |>
   select(
     subfield_code,
     value
   )
+#> # A tibble: 2 × 2
+#>   subfield_code value
+#>   <chr>         <chr>
+#> 1 a             Arithmetic /
+#> 2 c             Carl Sandburg ; illustrated as an anamorphic adventure by Ted Rand.
 ```
 
-Output:
+The point is not that tag `245` is difficult to extract. The full rectangular
+form shows that the same canonical representation safely preserves indicators,
+field repetition, subfield grouping and source order across the complete record.
 
-```text
-# A tibble: 2 × 2
-  subfield_code value
-  <chr>         <chr>
-1 a             Arithmetic /
-2 c             Carl Sandburg ; illustrated as an anamorphic adventure by Ted Rand.
-```
-
-The point is not that tag `245` is difficult to extract. The point is that the exact same representation remains safe when fields and subfields repeat in much less convenient records.
 
 ### Choose an in memory or Parquet workflow
 
