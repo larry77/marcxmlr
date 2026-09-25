@@ -92,17 +92,6 @@ A small MARCXML data field looks like this:
 </datafield>
 ```
 
-In the canonical rectangular representation, the two subfields become two rows
-while the field tag and indicators remain attached to both:
-
-| tag | ind1 | ind2 | subfield_code | value |
-|---|---|---|---|---|
-| 650 | `<blank>` | 0 | a | Totalitarianism |
-| 650 | `<blank>` | 0 | v | Fiction. |
-
-For readability, `<blank>` denotes the actual one-character blank indicator
-`" "` preserved by `marcxmlr`. It is not missing data.
-
 The XML hierarchy keeps the two subfields attached to the same occurrence of
 field `650`. This relationship becomes important as soon as fields or subfields
 repeat.
@@ -168,6 +157,38 @@ important even for readers who already know MARC 21 well.
 `marcxmlr` uses a long rectangular representation that makes MARC structure
 explicit instead of discarding it.
 
+### Revisiting the small example
+
+Return to the `650` field introduced above:
+
+```xml
+<datafield tag="650" ind1=" " ind2="0">
+  <subfield code="a">Totalitarianism</subfield>
+  <subfield code="v">Fiction.</subfield>
+</datafield>
+```
+
+The problem was that a simple flattening could preserve the two values while
+losing the fact that they belong to the same occurrence of field `650`.
+
+In the complete example below, this same field occurs in record `1` at
+`field_order = 5` and is the first occurrence of tag `650`. Its canonical
+representation is therefore:
+
+| record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
+|---:|---|---|---|---|---:|---:|---|---|---:|---:|
+| 1 | datafield | 650 | a | Totalitarianism | 5 | 1 | `<blank>` | 0 | 1 | 1 |
+| 1 | datafield | 650 | v | Fiction. | 5 | 1 | `<blank>` | 0 | 2 | 1 |
+
+Both rows share the same `record_id`, `field_order`, tag and indicators, so they
+remain attached to the same MARC field instance. `subfield_order` preserves the
+order of `$a` and `$v`. The information that simple flattening lost is therefore
+made explicit in ordinary columns.
+
+For readability in documentation tables, `<blank>` denotes the actual
+one-character MARC indicator value `" "`. It is not missing data and is distinct
+from `NA`.
+
 ### The 11 columns
 
 Every result contains exactly these columns, in this order:
@@ -185,10 +206,6 @@ Every result contains exactly these columns, in this order:
 | `ind2` | character | Second indicator for a data field; may be a single blank space (`" "`) when the MARC indicator is blank; otherwise `NA`. |
 | `subfield_order` | integer | Position of the subfield inside its containing data field; otherwise `NA`. |
 | `subfield_occurrence` | integer | Occurrence number of that subfield code inside that particular field instance; otherwise `NA`. |
-
-A blank indicator is an actual MARC value, not missing data. `marcxmlr`
-preserves it as the one-character string `" "`. This is distinct from `NA`,
-which means that indicators do not apply, as for leaders and control fields.
 
 ### Structural coordinates and analytical occurrence columns
 
@@ -287,8 +304,8 @@ Consider this deliberately small but structurally representative MARCXML record:
 ```
 
 The same record in the canonical representation has the following structure.
-For readability, `<blank>` denotes the actual one-character indicator value
-`" "` preserved by `marcxmlr`; it is distinct from `NA`.
+As above, `<blank>` denotes the actual one-character indicator value `" "`.
+
 
 | record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
 |---:|---|---|---|---|---:|---:|---|---|---:|---:|
@@ -340,37 +357,7 @@ marc <- read_marcxml(source_xml)
 
 dim(marc)
 #> [1] 18 11
-```
 
-The complete bundled example is the following canonical rectangular
-representation. As above, `<blank>` denotes the actual one-character indicator
-value `" "` returned by `marcxmlr`.
-
-| record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
-|---:|---|---|---|---|---:|---:|---|---|---:|---:|
-| 1 | leader | LDR | NA | 00000nam a2200000 i 4500 | 0 | 1 | NA | NA | NA | NA |
-| 1 | controlfield | 001 | NA | demo-1 | 1 | 1 | NA | NA | NA | NA |
-| 1 | controlfield | 008 | NA | `260101s2026    xx            000 0 eng d` | 2 | 1 | NA | NA | NA | NA |
-| 1 | datafield | 245 | a | Scalable catalogues : | 3 | 1 | 1 | 0 | 1 | 1 |
-| 1 | datafield | 245 | b | a synthetic example | 3 | 1 | 1 | 0 | 2 | 1 |
-| 1 | datafield | 650 | a | Libraries | 4 | 1 | `<blank>` | 0 | 1 | 1 |
-| 1 | datafield | 650 | x | Data processing | 4 | 1 | `<blank>` | 0 | 2 | 1 |
-| 1 | datafield | 650 | a | Metadata | 5 | 2 | `<blank>` | 0 | 1 | 1 |
-| 1 | datafield | 856 | u | https://example.org/item/1 | 6 | 1 | 4 | 0 | 1 | 1 |
-| 1 | datafield | 856 | y | Full text | 6 | 1 | 4 | 0 | 2 | 1 |
-| 1 | datafield | 856 | y | Alternate access | 6 | 1 | 4 | 0 | 3 | 2 |
-| 2 | leader | LDR | NA | 00000nam a2200000 i 4500 | 0 | 1 | NA | NA | NA | NA |
-| 2 | controlfield | 001 | NA | demo-2 | 1 | 1 | NA | NA | NA | NA |
-| 2 | controlfield | 008 | NA | `260102s2026    xx            000 0 eng d` | 2 | 1 | NA | NA | NA | NA |
-| 2 | datafield | 100 | a | Example, Ana | 3 | 1 | 1 | `<blank>` | 1 | 1 |
-| 2 | datafield | 100 | d | 1980- | 3 | 1 | 1 | `<blank>` | 2 | 1 |
-| 2 | datafield | 245 | a | Café metadata & reproducible examples | 4 | 1 | 1 | 0 | 1 | 1 |
-| 2 | datafield | 500 | a | `  Leading and trailing spaces are preserved.  ` | 5 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-
-A narrower query can then select only the information needed for a particular
-task:
-
-```r
 marc |>
   filter(record_id == 1L, tag == "856") |>
   select(
@@ -387,8 +374,8 @@ marc |>
 #> 3 y             Alternate access                        3                   2
 ```
 
-The narrower extract shows a repeated `$y` subfield and makes the two
-occurrences directly visible.
+The complete result is an ordinary tibble. The extract shows a repeated `$y`
+subfield and makes the two occurrences directly visible.
 
 ### Check the representation before writing
 
@@ -657,76 +644,25 @@ library(dplyr)
 
 sandburg <- read_marcxml("data/loc/sandburg.xml")
 
-dim(sandburg)
-#> [1] 38 11
-```
-
-The complete record has the following canonical rectangular representation.
-For readability, `<blank>` denotes the actual one-character indicator value
-`" "` preserved by `marcxmlr`; it is distinct from `NA`, which means that
-indicators do not apply.
-
-| record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
-|---:|---|---|---|---|---:|---:|---|---|---:|---:|
-| 1 | leader | LDR | NA | 01142cam 2200301 a 4500 | 0 | 1 | NA | NA | NA | NA |
-| 1 | controlfield | 001 | NA | 92005291 | 1 | 1 | NA | NA | NA | NA |
-| 1 | controlfield | 003 | NA | DLC | 2 | 1 | NA | NA | NA | NA |
-| 1 | controlfield | 005 | NA | 19930521155141.9 | 3 | 1 | NA | NA | NA | NA |
-| 1 | controlfield | 008 | NA | `920219s1993    caua   j      000 0 eng` | 4 | 1 | NA | NA | NA | NA |
-| 1 | datafield | 010 | a | 92005291 | 5 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-| 1 | datafield | 020 | a | 0152038655 : | 6 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-| 1 | datafield | 020 | c | $15.95 | 6 | 1 | `<blank>` | `<blank>` | 2 | 1 |
-| 1 | datafield | 040 | a | DLC | 7 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-| 1 | datafield | 040 | c | DLC | 7 | 1 | `<blank>` | `<blank>` | 2 | 1 |
-| 1 | datafield | 040 | d | DLC | 7 | 1 | `<blank>` | `<blank>` | 3 | 1 |
-| 1 | datafield | 042 | a | lcac | 8 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-| 1 | datafield | 050 | a | PS3537.A618 | 9 | 1 | 0 | 0 | 1 | 1 |
-| 1 | datafield | 050 | b | A88 1993 | 9 | 1 | 0 | 0 | 2 | 1 |
-| 1 | datafield | 082 | a | 811/.52 | 10 | 1 | 0 | 0 | 1 | 1 |
-| 1 | datafield | 082 | 2 | 20 | 10 | 1 | 0 | 0 | 2 | 1 |
-| 1 | datafield | 100 | a | Sandburg, Carl, | 11 | 1 | 1 | `<blank>` | 1 | 1 |
-| 1 | datafield | 100 | d | 1878-1967. | 11 | 1 | 1 | `<blank>` | 2 | 1 |
-| 1 | datafield | 245 | a | Arithmetic / | 12 | 1 | 1 | 0 | 1 | 1 |
-| 1 | datafield | 245 | c | Carl Sandburg ; illustrated as an anamorphic adventure by Ted Rand. | 12 | 1 | 1 | 0 | 2 | 1 |
-| 1 | datafield | 250 | a | 1st ed. | 13 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-| 1 | datafield | 260 | a | San Diego : | 14 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-| 1 | datafield | 260 | b | Harcourt Brace Jovanovich, | 14 | 1 | `<blank>` | `<blank>` | 2 | 1 |
-| 1 | datafield | 260 | c | c1993. | 14 | 1 | `<blank>` | `<blank>` | 3 | 1 |
-| 1 | datafield | 300 | a | 1 v. (unpaged) : | 15 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-| 1 | datafield | 300 | b | ill. (some col.) ; | 15 | 1 | `<blank>` | `<blank>` | 2 | 1 |
-| 1 | datafield | 300 | c | 26 cm. | 15 | 1 | `<blank>` | `<blank>` | 3 | 1 |
-| 1 | datafield | 500 | a | One Mylar sheet included in pocket. | 16 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-| 1 | datafield | 520 | a | A poem about numbers and their characteristics. Features anamorphic, or distorted, drawings which can be restored to normal by viewing from a particular angle or by viewing the image's reflection in the provided Mylar cone. | 17 | 1 | `<blank>` | `<blank>` | 1 | 1 |
-| 1 | datafield | 650 | a | Arithmetic | 18 | 1 | `<blank>` | 0 | 1 | 1 |
-| 1 | datafield | 650 | x | Juvenile poetry. | 18 | 1 | `<blank>` | 0 | 2 | 1 |
-| 1 | datafield | 650 | a | Children's poetry, American. | 19 | 2 | `<blank>` | 0 | 1 | 1 |
-| 1 | datafield | 650 | a | Arithmetic | 20 | 3 | `<blank>` | 1 | 1 | 1 |
-| 1 | datafield | 650 | x | Poetry. | 20 | 3 | `<blank>` | 1 | 2 | 1 |
-| 1 | datafield | 650 | a | American poetry. | 21 | 4 | `<blank>` | 1 | 1 | 1 |
-| 1 | datafield | 650 | a | Visual perception. | 22 | 5 | `<blank>` | 1 | 1 | 1 |
-| 1 | datafield | 700 | a | Rand, Ted, | 23 | 1 | 1 | `<blank>` | 1 | 1 |
-| 1 | datafield | 700 | e | ill. | 23 | 1 | 1 | `<blank>` | 2 | 1 |
-
-A narrower query can then select only the title field:
-
-```r
 sandburg |>
   filter(tag == "245") |>
   select(
     subfield_code,
     value
   )
-#> # A tibble: 2 × 2
-#>   subfield_code value
-#>   <chr>         <chr>
-#> 1 a             Arithmetic /
-#> 2 c             Carl Sandburg ; illustrated as an anamorphic adventure by Ted Rand.
 ```
 
-The point is not that tag `245` is difficult to extract. The full rectangular
-form shows that the same canonical representation safely preserves indicators,
-field repetition, subfield grouping and source order across the complete record.
+Output:
 
+```text
+# A tibble: 2 × 2
+  subfield_code value
+  <chr>         <chr>
+1 a             Arithmetic /
+2 c             Carl Sandburg ; illustrated as an anamorphic adventure by Ted Rand.
+```
+
+The point is not that tag `245` is difficult to extract. The point is that the exact same representation remains safe when fields and subfields repeat in much less convenient records.
 
 ### Choose an in memory or Parquet workflow
 
