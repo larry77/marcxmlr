@@ -1,3 +1,8 @@
+# marcxmlr 0.3.0.9000
+
+* Development version following the tagged 0.3.0 release. GitHub `main`
+  may contain documentation and functionality that has not yet reached CRAN.
+
 # marcxmlr 0.3.0
 
 * Add `diagnose_canonical()` for checking whether the canonical 11-column
