@@ -78,3 +78,31 @@ test_that("lazy Arrow gzip output round trips", {
   )
   expect_identical(read_marcxml(out), x)
 })
+
+test_that("existing reader reads genuine gzip MARCXML", {
+  source_xml <- system.file(
+    "extdata", "example-marcxml.xml",
+    package = "marcxmlr"
+  )
+
+  bytes <- readBin(
+    source_xml,
+    "raw",
+    n = file.info(source_xml)$size
+  )
+
+  compressed <- tempfile(fileext = ".xml.gz")
+  con <- gzfile(compressed, "wb", compression = 6L)
+  writeBin(bytes, con)
+  close(con)
+
+  expect_identical(
+    as.integer(readBin(compressed, "raw", n = 2L)),
+    c(31L, 139L)
+  )
+
+  expect_identical(
+    read_marcxml(compressed),
+    read_marcxml(source_xml)
+  )
+})
