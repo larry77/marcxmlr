@@ -99,10 +99,30 @@ source_xml <- system.file(
 )
 
 marc <- read_marcxml(source_xml)
-marc
+
+dim(marc)
+#> [1] 18 11
+
+marc |>
+  filter(record_id == 1L, tag == "856") |>
+  select(
+    subfield_code,
+    value,
+    subfield_order,
+    subfield_occurrence
+  )
+#> # A tibble: 3 × 4
+#>   subfield_code value                      subfield_order subfield_occurrence
+#>   <chr>         <chr>                               <int>               <int>
+#> 1 u             https://example.org/item/1              1                   1
+#> 2 y             Full text                               2                   1
+#> 3 y             Alternate access                        3                   2
 ```
 
-The result is an ordinary tibble. The exact columns and their role are explained below.
+The complete result is an ordinary tibble. This small extract already shows
+one of the central difficulties of MARC data: the same subfield code can occur
+more than once inside the same field. The exact columns and their role are
+explained below.
 
 ### Select records and export them as MARCXML
 
@@ -111,47 +131,63 @@ MARCXML as the interchange format:
 
 ```r
 selected <- marc |>
-  filter(record_id %in% c(1L, 2L))
+  filter(record_id == 1L)
 
 out <- tempfile(fileext = ".xml")
 write_marcxml(selected, out)
 
-reread <- read_marcxml(out)
-reread
+roundtrip <- read_marcxml(out)
+
+identical(selected, roundtrip)
+#> [1] TRUE
 ```
 
-Record identifiers in a subset may be renumbered when the new MARCXML collection
-is read again. The MARC record structure and values are the relevant
-round-trip semantics.
+The selection is expressed with ordinary `dplyr` syntax, but the exported file
+is again MARCXML and can be exchanged with software outside R. In this example,
+reading the exported file reproduces the selected tabular representation
+exactly.
 
-### Modify canonical data and write a new MARCXML file
+### Modify repeated MARC data and write a new MARCXML file
 
-The same workflow can include ordinary `dplyr` transformations. For example, a
-local transformation of title subfield `245$a` can be expressed directly:
+The same workflow can include ordinary `dplyr` transformations. Here the second
+`856$y` subfield is changed while the first one is left untouched:
 
 ```r
 edited <- marc |>
   mutate(
     value = if_else(
-      tag == "245" & subfield_code == "a",
-      paste0(value, " [edited]"),
+      tag == "856" &
+        subfield_code == "y" &
+        subfield_occurrence == 2L,
+      "Backup access",
       value
     )
   )
 
 diagnose_canonical(edited)
+#> # A tibble: 0 × 6
+#> # ℹ 6 variables: severity <chr>, code <chr>, message <chr>, record_id <int>,
+#> #   field_order <int>, subfield_order <int>
 
 edited_xml <- tempfile(fileext = ".xml")
 write_marcxml(edited, edited_xml)
+
+read_marcxml(edited_xml) |>
+  filter(record_id == 1L, tag == "856") |>
+  select(subfield_code, value, subfield_occurrence)
+#> # A tibble: 3 × 3
+#>   subfield_code value                      subfield_occurrence
+#>   <chr>         <chr>                                    <int>
+#> 1 u             https://example.org/item/1                   1
+#> 2 y             Full text                                    1
+#> 3 y             Backup access                                2
 ```
 
-`diagnose_canonical()` checks whether the resulting canonical representation is
-structurally safe to serialize. `write_marcxml()` then writes the MARC structure
-represented by the table; it does not attempt to reproduce incidental XML
-formatting such as indentation or attribute order.
-
-This combination is useful when MARC records need to be selected, edited or
-prepared in R and then shared again through the established MARCXML format.
+The empty diagnostics tibble means that the edited representation is
+structurally safe to serialize. The reread output shows that the second repeated
+`$y` value was changed while the first remained distinct. This is also a simple
+example of why `subfield_occurrence` is useful for analytical work: it lets a
+specific repeated subfield be addressed directly with ordinary `dplyr` syntax.
 
 ## What `marcxmlr` provides
 
