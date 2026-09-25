@@ -157,38 +157,6 @@ important even for readers who already know MARC 21 well.
 `marcxmlr` uses a long rectangular representation that makes MARC structure
 explicit instead of discarding it.
 
-### Revisiting the small example
-
-Return to the `650` field introduced above:
-
-```xml
-<datafield tag="650" ind1=" " ind2="0">
-  <subfield code="a">Totalitarianism</subfield>
-  <subfield code="v">Fiction.</subfield>
-</datafield>
-```
-
-The problem was that a simple flattening could preserve the two values while
-losing the fact that they belong to the same occurrence of field `650`.
-
-In the complete example below, this same field occurs in record `1` at
-`field_order = 5` and is the first occurrence of tag `650`. Its canonical
-representation is therefore:
-
-| record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
-|---:|---|---|---|---|---:|---:|---|---|---:|---:|
-| 1 | datafield | 650 | a | Totalitarianism | 5 | 1 | `<blank>` | 0 | 1 | 1 |
-| 1 | datafield | 650 | v | Fiction. | 5 | 1 | `<blank>` | 0 | 2 | 1 |
-
-Both rows share the same `record_id`, `field_order`, tag and indicators, so they
-remain attached to the same MARC field instance. `subfield_order` preserves the
-order of `$a` and `$v`. The information that simple flattening lost is therefore
-made explicit in ordinary columns.
-
-For readability in documentation tables, `<blank>` denotes the actual
-one-character MARC indicator value `" "`. It is not missing data and is distinct
-from `NA`.
-
 ### The 11 columns
 
 Every result contains exactly these columns, in this order:
@@ -206,6 +174,117 @@ Every result contains exactly these columns, in this order:
 | `ind2` | character | Second indicator for a data field; may be a single blank space (`" "`) when the MARC indicator is blank; otherwise `NA`. |
 | `subfield_order` | integer | Position of the subfield inside its containing data field; otherwise `NA`. |
 | `subfield_occurrence` | integer | Occurrence number of that subfield code inside that particular field instance; otherwise `NA`. |
+
+A blank indicator is an actual MARC value, not missing data. `marcxmlr`
+preserves it as the one-character string `" "`. This is distinct from `NA`,
+which means that indicators do not apply, as for leaders and control fields.
+
+### Revisiting the small example
+
+Return to the `650` field introduced above:
+
+```xml
+<datafield tag="650" ind1=" " ind2="0">
+  <subfield code="a">Totalitarianism</subfield>
+  <subfield code="v">Fiction.</subfield>
+</datafield>
+```
+
+The problem was that a simple flattening could preserve the values while losing
+the fact that `$a Totalitarianism` and `$v Fiction.` belong to the same
+occurrence of field `650`.
+
+Using the 11-column representation, that field can be represented as follows.
+The coordinates shown here are the ones used by the fuller example immediately
+below:
+
+| record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
+|---:|---|---|---|---|---:|---:|---|---|---:|---:|
+| 1 | datafield | 650 | a | Totalitarianism | 5 | 1 | `<blank>` | 0 | 1 | 1 |
+| 1 | datafield | 650 | v | Fiction. | 5 | 1 | `<blank>` | 0 | 2 | 1 |
+
+Both rows share the same `record_id`, `field_order`, tag and indicators, so they
+remain part of the same MARC field instance. `subfield_order` preserves the
+order of `$a` and `$v`, while `field_occurrence` and `subfield_occurrence` make
+repetition explicit for analysis.
+
+For readability in documentation tables, `<blank>` denotes the actual
+one-character MARC indicator value `" "`. It is not `NA`.
+
+### A more realistic complete example
+
+The same principles apply to a fuller MARCXML record with several field types, repeated fields and repeated subfields:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<record xmlns="http://www.loc.gov/MARC21/slim">
+  <leader>00000cam a2200000 i 4500</leader>
+  <controlfield tag="001">12345</controlfield>
+
+  <datafield tag="100" ind1="1" ind2=" ">
+    <subfield code="a">Orwell, George,</subfield>
+    <subfield code="d">1903-1950.</subfield>
+  </datafield>
+
+  <datafield tag="245" ind1="1" ind2="0">
+    <subfield code="a">Nineteen eighty-four /</subfield>
+    <subfield code="c">George Orwell.</subfield>
+  </datafield>
+
+  <datafield tag="264" ind1=" " ind2="1">
+    <subfield code="a">London :</subfield>
+    <subfield code="b">Secker &amp; Warburg,</subfield>
+    <subfield code="c">1949.</subfield>
+  </datafield>
+
+  <datafield tag="650" ind1=" " ind2="0">
+    <subfield code="a">Totalitarianism</subfield>
+    <subfield code="v">Fiction.</subfield>
+  </datafield>
+
+  <datafield tag="650" ind1=" " ind2="0">
+    <subfield code="a">Dystopias.</subfield>
+    <subfield code="v">Fiction.</subfield>
+  </datafield>
+
+  <datafield tag="856" ind1="4" ind2="0">
+    <subfield code="u">https://example.org/1984</subfield>
+    <subfield code="y">Full text</subfield>
+    <subfield code="y">Mirror</subfield>
+  </datafield>
+</record>
+```
+
+The same record in the canonical representation has the following structure. In the table, `<blank>` denotes the actual one-character indicator value `" "`:
+
+| record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
+|---:|---|---|---|---|---:|---:|---|---|---:|---:|
+| 1 | leader | LDR | NA | 00000cam a2200000 i 4500 | 0 | 1 | NA | NA | NA | NA |
+| 1 | controlfield | 001 | NA | 12345 | 1 | 1 | NA | NA | NA | NA |
+| 1 | datafield | 100 | a | Orwell, George, | 2 | 1 | 1 | `<blank>` | 1 | 1 |
+| 1 | datafield | 100 | d | 1903-1950. | 2 | 1 | 1 | `<blank>` | 2 | 1 |
+| 1 | datafield | 245 | a | Nineteen eighty-four / | 3 | 1 | 1 | 0 | 1 | 1 |
+| 1 | datafield | 245 | c | George Orwell. | 3 | 1 | 1 | 0 | 2 | 1 |
+| 1 | datafield | 264 | a | London : | 4 | 1 | `<blank>` | 1 | 1 | 1 |
+| 1 | datafield | 264 | b | Secker & Warburg, | 4 | 1 | `<blank>` | 1 | 2 | 1 |
+| 1 | datafield | 264 | c | 1949. | 4 | 1 | `<blank>` | 1 | 3 | 1 |
+| 1 | datafield | 650 | a | Totalitarianism | 5 | 1 | `<blank>` | 0 | 1 | 1 |
+| 1 | datafield | 650 | v | Fiction. | 5 | 1 | `<blank>` | 0 | 2 | 1 |
+| 1 | datafield | 650 | a | Dystopias. | 6 | 2 | `<blank>` | 0 | 1 | 1 |
+| 1 | datafield | 650 | v | Fiction. | 6 | 2 | `<blank>` | 0 | 2 | 1 |
+| 1 | datafield | 856 | u | https://example.org/1984 | 7 | 1 | 4 | 0 | 1 | 1 |
+| 1 | datafield | 856 | y | Full text | 7 | 1 | 4 | 0 | 2 | 1 |
+| 1 | datafield | 856 | y | Mirror | 7 | 1 | 4 | 0 | 3 | 2 |
+
+Several important features are visible immediately:
+
+* both `650` fields have tag `650`, but different `field_order` and `field_occurrence` values;
+* `$v Fiction.` remains attached to the correct `650` instance because its rows share the same `field_order`;
+* the two `856$y` values remain two distinct subfield instances, with `subfield_occurrence` equal to `1` and `2`;
+* indicators remain attached to every row belonging to their data field instance; and
+* source order is preserved at both field and subfield level.
+
+Nothing forces the analyst to retain all of these columns forever. Their purpose is to make sure that the choice to discard structural information is made explicitly by the analyst rather than implicitly by the parser.
 
 ### Structural coordinates and analytical occurrence columns
 
@@ -258,83 +337,6 @@ The MARC hierarchy is encoded in columns rather than discarded.
 Here, **semantic equivalence** means equivalence of the MARC record structure and values represented by MARCXML. It does not mean byte for byte reproduction of the XML serialization. XML declarations, namespace prefix spelling, indentation, attribute ordering, comments, and similar serialization details are not part of the analytical contract. Leaders, control fields, data field instances, indicators, subfields, repetition, and ordering are.
 
 This is the central design choice of the package. A user can always derive a simpler representation later. Information discarded during import cannot be reconstructed reliably afterward.
-
-### A complete example
-
-Consider this deliberately small but structurally representative MARCXML record:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<record xmlns="http://www.loc.gov/MARC21/slim">
-  <leader>00000cam a2200000 i 4500</leader>
-  <controlfield tag="001">12345</controlfield>
-
-  <datafield tag="100" ind1="1" ind2=" ">
-    <subfield code="a">Orwell, George,</subfield>
-    <subfield code="d">1903-1950.</subfield>
-  </datafield>
-
-  <datafield tag="245" ind1="1" ind2="0">
-    <subfield code="a">Nineteen eighty-four /</subfield>
-    <subfield code="c">George Orwell.</subfield>
-  </datafield>
-
-  <datafield tag="264" ind1=" " ind2="1">
-    <subfield code="a">London :</subfield>
-    <subfield code="b">Secker &amp; Warburg,</subfield>
-    <subfield code="c">1949.</subfield>
-  </datafield>
-
-  <datafield tag="650" ind1=" " ind2="0">
-    <subfield code="a">Totalitarianism</subfield>
-    <subfield code="v">Fiction.</subfield>
-  </datafield>
-
-  <datafield tag="650" ind1=" " ind2="0">
-    <subfield code="a">Dystopias.</subfield>
-    <subfield code="v">Fiction.</subfield>
-  </datafield>
-
-  <datafield tag="856" ind1="4" ind2="0">
-    <subfield code="u">https://example.org/1984</subfield>
-    <subfield code="y">Full text</subfield>
-    <subfield code="y">Mirror</subfield>
-  </datafield>
-</record>
-```
-
-The same record in the canonical representation has the following structure.
-As above, `<blank>` denotes the actual one-character indicator value `" "`.
-
-
-| record_id | field_type | tag | subfield_code | value | field_order | field_occurrence | ind1 | ind2 | subfield_order | subfield_occurrence |
-|---:|---|---|---|---|---:|---:|---|---|---:|---:|
-| 1 | leader | LDR | NA | 00000cam a2200000 i 4500 | 0 | 1 | NA | NA | NA | NA |
-| 1 | controlfield | 001 | NA | 12345 | 1 | 1 | NA | NA | NA | NA |
-| 1 | datafield | 100 | a | Orwell, George, | 2 | 1 | 1 | `<blank>` | 1 | 1 |
-| 1 | datafield | 100 | d | 1903-1950. | 2 | 1 | 1 | `<blank>` | 2 | 1 |
-| 1 | datafield | 245 | a | Nineteen eighty-four / | 3 | 1 | 1 | 0 | 1 | 1 |
-| 1 | datafield | 245 | c | George Orwell. | 3 | 1 | 1 | 0 | 2 | 1 |
-| 1 | datafield | 264 | a | London : | 4 | 1 | `<blank>` | 1 | 1 | 1 |
-| 1 | datafield | 264 | b | Secker & Warburg, | 4 | 1 | `<blank>` | 1 | 2 | 1 |
-| 1 | datafield | 264 | c | 1949. | 4 | 1 | `<blank>` | 1 | 3 | 1 |
-| 1 | datafield | 650 | a | Totalitarianism | 5 | 1 | `<blank>` | 0 | 1 | 1 |
-| 1 | datafield | 650 | v | Fiction. | 5 | 1 | `<blank>` | 0 | 2 | 1 |
-| 1 | datafield | 650 | a | Dystopias. | 6 | 2 | `<blank>` | 0 | 1 | 1 |
-| 1 | datafield | 650 | v | Fiction. | 6 | 2 | `<blank>` | 0 | 2 | 1 |
-| 1 | datafield | 856 | u | https://example.org/1984 | 7 | 1 | 4 | 0 | 1 | 1 |
-| 1 | datafield | 856 | y | Full text | 7 | 1 | 4 | 0 | 2 | 1 |
-| 1 | datafield | 856 | y | Mirror | 7 | 1 | 4 | 0 | 3 | 2 |
-
-Several important features are visible immediately:
-
-* both `650` fields have tag `650`, but different `field_order` and `field_occurrence` values;
-* `$v Fiction.` remains attached to the correct `650` instance because its rows share the same `field_order`;
-* the two `856$y` values remain two distinct subfield instances, with `subfield_occurrence` equal to `1` and `2`;
-* indicators remain attached to every row belonging to their data field instance; and
-* source order is preserved at both field and subfield level.
-
-Nothing forces the analyst to retain all of these columns forever. Their purpose is to make sure that the choice to discard structural information is made explicitly by the analyst rather than implicitly by the parser.
 
 ## Working with MARCXML in R
 
