@@ -3,25 +3,38 @@
 [![R-CMD-check](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml)
 [![CRAN status](https://www.r-pkg.org/badges/version/marcxmlr)](https://CRAN.R-project.org/package=marcxmlr)
 
-`marcxmlr` provides a faithful, tidy and scalable representation of MARC 21 XML in R.
+`marcxmlr` helps bring MARC 21 data into ordinary R data workflows.
 
-It reads MARCXML into a canonical 11-column long-form tibble that preserves
-leaders, control fields, data fields, indicators, repeated fields, repeated
-subfields and source order. Because the result is an ordinary tibble, MARC data
-can be inspected, selected and modified with familiar R tools such as `dplyr`.
+MARC 21 is a widely used format for representing bibliographic and related
+metadata. In many data-exchange workflows, MARC 21 records are distributed as
+MARCXML: an XML representation in which records contain ordered fields,
+indicators and subfields, and where both fields and subfields may repeat.
 
-The canonical representation can also be written back to MARCXML with
-`write_marcxml()`. This makes it useful both for analysis and as an editable
-intermediate representation for MARC data manipulation and exchange.
+This structure is well suited to representing MARC records, but it is less
+convenient for analytical work. An analyst using R and the tidyverse usually
+wants data in a rectangular form that can be filtered, grouped, joined,
+reshaped and summarized with familiar tools such as `dplyr`. MARCXML does not
+naturally fit that model: simply flattening the XML can lose information about
+repeated fields, repeated subfields, indicators and the relationships among
+them.
 
-A typical workflow is:
+`marcxmlr` provides a bridge between these two worlds. It reads MARCXML into a
+tidy rectangular representation while preserving the structure needed to
+distinguish the different parts of a MARC record. The resulting data can be
+analysed and manipulated with ordinary R tools.
+
+It can also perform the reverse operation. A structurally valid representation
+can be written back to MARCXML, making it possible to select or modify MARC data
+in R and then export the result again in the established MARCXML format.
+
+A typical workflow is therefore:
 
 ```text
 MARCXML
    ↓
 read_marcxml()
    ↓
-canonical tibble
+tidy MARC representation in R
    ↓
 inspect / select / modify with ordinary R tools
    ↓
@@ -30,8 +43,8 @@ write_marcxml()
 MARCXML
 ```
 
-Round-trip MARCXML writing and canonical diagnostics were introduced in
-**marcxmlr 0.3.0**.
+The exact tabular representation used by `marcxmlr` is introduced later, once
+the basic workflow and the reason for preserving MARC structure are clear.
 
 ## Stable CRAN release and GitHub development version
 
@@ -70,10 +83,10 @@ development headers/libraries. On Debian/Ubuntu these are normally provided by
 
 ## A practical round trip
 
-The package's canonical representation is designed to sit between MARCXML and
-ordinary R data manipulation.
+The package's rectangular representation is designed to sit between MARCXML
+and ordinary R data manipulation.
 
-The bundled example can be read directly into the canonical representation:
+The bundled example can be read directly into R:
 
 ```r
 library(marcxmlr)
@@ -89,7 +102,7 @@ marc <- read_marcxml(source_xml)
 marc
 ```
 
-The result is an ordinary tibble with the canonical 11 columns described below.
+The result is an ordinary tibble. The exact columns and their role are explained below.
 
 ### Select records and export them as MARCXML
 
