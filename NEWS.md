@@ -1,7 +1,10 @@
-# marcxmlr 0.3.0.9000
+# marcxmlr 0.3.1
 
-* Development version following the tagged 0.3.0 release. GitHub `main`
-  may contain documentation and functionality that has not yet reached CRAN.
+* Add transparent gzip output support to `write_marcxml()` for filenames
+  ending in `.gz`, with optional `compression_level` from 1 to 9.
+* Preserve compound `.xml.gz` filenames when writing numbered shards.
+* Preserve the native libxml2 gzip path when zlib support is available,
+  with a portable fallback for libxml2 builds without gzip output support.
 
 # marcxmlr 0.3.0
 
