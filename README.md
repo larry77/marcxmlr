@@ -14,6 +14,10 @@ structure, allowing the data to be inspected, selected and modified with
 ordinary R tools. The resulting representation can also be written back to
 MARCXML.
 
+Both reading and writing support gzip-compressed MARCXML files such as
+`catalogue.xml.gz`. `write_marcxml()` automatically produces gzip-compressed
+output when the output filename ends in `.gz`.
+
 A typical workflow is therefore:
 
 ```text
@@ -35,16 +39,13 @@ structure of MARC records.
 
 ## Installation
 
-CRAN currently provides `marcxmlr` 0.2.1. That version predates MARCXML writing.
-
-Install the CRAN version with:
+Install the current CRAN release with:
 
 ```r
 install.packages("marcxmlr")
 ```
 
-To use `write_marcxml()` and the complete round trip workflow described in this
-README, install the current GitHub version:
+To install the current development version from GitHub:
 
 ```r
 # install.packages("pak")
