@@ -1,6 +1,8 @@
-## First submission
+## Update submission
 
-This is the first submission of `marcxmlr`.
+This is an update of `marcxmlr` from version 0.2.1 to 0.3.1.
+
+The update adds MARCXML writing, including gzip-compressed `.xml.gz` output, while preserving the existing canonical representation and reading interfaces.
 
 ## Test environments
 
@@ -13,18 +15,12 @@ This is the first submission of `marcxmlr`.
 
 ## R CMD check results
 
-0 errors | 0 warnings | 1 note
+0 errors | 0 warnings | 0 notes
 
-* This is a new submission.
+The submitted source tarball was checked locally with `R CMD check --as-cran`.
 
-## Data and tests
+## Additional testing
 
-The package contains only a small synthetic MARCXML fixture. No private
-catalogue, derived private data, or large integration input is included.
-Large-file benchmarks use public data supplied separately by the user and are
-not run during `R CMD check`.
+The package test suite includes round-trip MARCXML serialization, gzip-compressed MARCXML input and output, Arrow-backed writing, sharding, malformed-input handling, and portability checks across Linux, Windows, and macOS.
 
-The bounded-memory converter was also tested manually with a public U.S.
-Government Publishing Office MARCXML collection containing 40,000 records and
-producing 2,143,952 canonical rows. This external integration input is linked
-from the README and is not included in the package.
+Large-file development tests use public U.S. Government Publishing Office MARCXML data and are not included in `R CMD check`.
