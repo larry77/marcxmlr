@@ -45,6 +45,9 @@ Install the current CRAN release with:
 install.packages("marcxmlr")
 ```
 
+The CRAN release includes the complete read/write workflow, including
+transparent support for gzip-compressed MARCXML files (`.xml.gz`).
+
 To install the current development version from GitHub:
 
 ```r
