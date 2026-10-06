@@ -1,0 +1,280 @@
+---
+title: "A practical marcxmlr workflow"
+author: "Lorenzo Isella"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{A practical marcxmlr workflow}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+## Overview
+
+`marcxmlr` reads MARC 21 XML into a fixed 11-column canonical table that
+preserves record structure, source order, repeated fields, repeated subfields,
+and indicators. The same representation can be queried with ordinary R tools,
+checked after editing, written back to MARCXML, or stored as Parquet for larger
+collections.
+
+This vignette follows one complete workflow:
+
+1. read a MARCXML collection;
+2. inspect repeated MARC structure;
+3. query and derive analytical data with `dplyr`;
+4. edit a repeated subfield;
+5. diagnose and serialize the canonical representation; and
+6. optionally move the same schema to a Parquet-backed workflow.
+
+All examples use the small MARCXML file bundled with the package, so the
+vignette is offline and quick to build.
+
+## Read MARCXML
+
+```{r read}
+library(marcxmlr)
+library(dplyr)
+
+source_xml <- system.file(
+  "extdata",
+  "example-marcxml.xml",
+  package = "marcxmlr"
+)
+
+marc <- read_marcxml(source_xml)
+marc
+```
+
+The result is an ordinary tibble with the canonical 11-column schema:
+
+```{r schema}
+names(marc)
+```
+
+The columns are `record_id`, `field_type`, `tag`, `subfield_code`, `value`,
+`field_order`, `field_occurrence`, `ind1`, `ind2`, `subfield_order`, and
+`subfield_occurrence`.
+
+`record_id`, `field_order`, and `subfield_order` locate values in the represented
+MARC structure. `field_occurrence` and `subfield_occurrence` are derived
+analytical coordinates that make repetitions easier to address.
+
+## Inspect repeated structure
+
+The first record contains an `856` field with two `$y` subfields. Their source
+order and separate occurrences remain explicit:
+
+```{r repeated-subfields}
+marc |>
+  filter(record_id == 1L, tag == "856") |>
+  select(
+    subfield_code,
+    value,
+    subfield_order,
+    subfield_occurrence
+  )
+```
+
+Repeated fields are preserved in the same way. The first record contains two
+`650` fields:
+
+```{r repeated-fields}
+marc |>
+  filter(record_id == 1L, tag == "650", subfield_code == "a") |>
+  select(record_id, field_order, field_occurrence, value)
+```
+
+This is why `marcxmlr` does not flatten MARCXML directly to one row per
+bibliographic record: repeated field and subfield relationships remain explicit
+until the analyst chooses how to simplify them.
+
+## Query with dplyr
+
+Because the canonical representation is a tibble, ordinary `dplyr` operations
+can be used directly. For example, title fields can be selected by MARC tag:
+
+```{r title-query}
+marc |>
+  filter(tag == "245") |>
+  select(record_id, subfield_code, value)
+```
+
+A condition can also select a complete field instance rather than only the row
+that matched. Rows with the same `record_id` and `field_order` belong to the
+same field instance:
+
+```{r complete-field}
+marc |>
+  group_by(record_id, field_order) |>
+  filter(
+    any(
+      tag == "650" &
+        subfield_code == "a" &
+        value == "Libraries"
+    )
+  ) |>
+  ungroup() |>
+  select(record_id, field_order, tag, subfield_code, value)
+```
+
+## Derive a simpler analytical table
+
+The canonical representation preserves MARC structure first. A simpler table
+can then be derived for a particular analysis.
+
+```{r analytical-table}
+titles <- marc |>
+  filter(tag == "245", subfield_code == "a") |>
+  transmute(record_id, title = value)
+
+subjects <- marc |>
+  filter(tag == "650") |>
+  group_by(record_id, field_order) |>
+  summarise(
+    subject = paste(value, collapse = " ; "),
+    .groups = "drop"
+  ) |>
+  group_by(record_id) |>
+  summarise(
+    subjects = paste(subject, collapse = " | "),
+    .groups = "drop"
+  )
+
+left_join(titles, subjects, by = "record_id")
+```
+
+This simplification is deliberately one-way. Once field membership or
+repetition has been collapsed, reconstructing the original MARC structure may
+no longer be possible.
+
+## Edit a repeated subfield
+
+A specific repeated value can be addressed with the occurrence coordinates.
+Here only the second `856$y` value in the first record is changed:
+
+```{r edit}
+edited <- marc |>
+  mutate(
+    value = if_else(
+      record_id == 1L &
+        tag == "856" &
+        subfield_code == "y" &
+        subfield_occurrence == 2L,
+      "Backup access",
+      value
+    )
+  )
+
+edited |>
+  filter(record_id == 1L, tag == "856") |>
+  select(subfield_code, value, subfield_occurrence)
+```
+
+Only `value` has changed; the structural coordinates remain intact.
+
+## Check before writing
+
+After transformations that may affect MARC structure,
+`diagnose_canonical()` can be used to inspect whether the representation is
+still safe to serialize.
+
+```{r diagnose}
+diagnostics <- diagnose_canonical(edited)
+diagnostics
+```
+
+A zero-row diagnostics tibble means that no issue was found. Errors identify
+structural problems that prevent safe serialization. Warnings can identify
+stale or gapped analytical occurrence coordinates that can be regenerated on
+reread.
+
+`diagnose_canonical()` checks the structural contract used by `marcxmlr`; it is
+not a complete MARC 21 content validator and does not replace MARCXML schema
+validation.
+
+## Write MARCXML and read it back
+
+`write_marcxml()` serializes coherent canonical data back to MARCXML. Structural
+errors are rejected by the writer; with the default `check = TRUE`, warning-level
+diagnostics are also emitted before writing.
+
+```{r roundtrip}
+out_xml <- tempfile(fileext = ".xml")
+write_marcxml(edited, out_xml)
+
+roundtrip <- read_marcxml(out_xml)
+identical(edited, roundtrip)
+```
+
+A related workflow is to select complete records and export the result:
+
+```{r subset-roundtrip}
+selected <- marc |>
+  filter(record_id == 1L)
+
+selected_xml <- tempfile(fileext = ".xml")
+write_marcxml(selected, selected_xml)
+
+identical(selected, read_marcxml(selected_xml))
+```
+
+The round trip preserves the represented MARC structure and values. It does not
+promise byte-for-byte reproduction of incidental XML serialization details such
+as indentation or namespace-prefix spelling.
+
+## Move the same schema to Parquet
+
+For collections that are inconvenient to materialize as one R object,
+`marcxml_to_parquet()` writes the same canonical schema as a directory of
+Parquet files in bounded record batches. Arrow support is optional, so the
+following examples run only when the optional packages needed for this workflow
+are available.
+
+```{r parquet, eval=requireNamespace("arrow", quietly = TRUE) && requireNamespace("XML", quietly = TRUE)}
+parquet_dir <- tempfile("marcxmlr-parquet-")
+
+marcxml_to_parquet(
+  source_xml,
+  output_dir = parquet_dir,
+  workers = 1L,
+  verbose = FALSE
+)
+
+catalogue <- arrow::open_dataset(parquet_dir)
+
+catalogue |>
+  summarise(rows = n()) |>
+  collect()
+```
+
+The Parquet dataset can be queried lazily with Arrow and `dplyr` before a small
+result is collected into R:
+
+```{r parquet-query, eval=requireNamespace("arrow", quietly = TRUE) && requireNamespace("XML", quietly = TRUE)}
+catalogue |>
+  filter(tag == "650", subfield_code == "a") |>
+  count(value, sort = TRUE) |>
+  collect()
+```
+
+Opening the dataset is lazy; collecting the complete dataset would still bring
+all rows into R memory.
+
+## Choosing a workflow
+
+For ordinary analysis, start with `read_marcxml()` and work with the returned
+tibble. Use `diagnose_canonical()` after transformations that may affect
+structure, and `write_marcxml()` when the result needs to return to MARCXML.
+
+Use `marcxml_to_parquet()` when keeping the complete canonical table in memory
+is undesirable or when a persistent Arrow/Parquet dataset is useful for repeated
+analytical queries. The logical 11-column representation is the same in both
+workflows.
