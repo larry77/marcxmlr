@@ -5,10 +5,40 @@
 
 # MARC 21 and MARCXML
 
-MARC stands for **Machine-Readable Cataloging**. [MARC 21](https://www.loc.gov/marc/)
-is a family of communication formats used to represent and exchange
-bibliographic, authority, holdings, classification and community information in
-machine-readable form. The examples in this README use bibliographic MARC 21.
+[MARC 21](https://www.loc.gov/marc/) stands for **Machine-Readable Cataloging**
+and is a family of communication formats used to represent and exchange
+bibliographic, authority, holdings, classification and community information.
+The examples in this README use bibliographic MARC 21.
+
+[MARCXML](https://www.loc.gov/standards/marcxml/) is the XML representation of
+MARC 21. It expresses the same logical record structure through XML elements and
+attributes rather than through the compact traditional MARC serialization.
+
+`marcxmlr` is an R package for bringing MARCXML into ordinary analytical
+workflows without first discarding the structure that makes MARC meaningful.
+The central idea of the package is not simply XML parsing: it is a documented,
+analyst-friendly rectangular representation of MARC structure.
+
+# Installation
+
+Install the current CRAN release with:
+
+```r
+install.packages("marcxmlr")
+```
+
+To install the current development version from GitHub:
+
+```r
+# install.packages("pak")
+pak::pak("larry77/marcxmlr")
+```
+
+Source installation from GitHub requires a C toolchain and libxml2 development
+headers and libraries. On Debian and Ubuntu these are normally provided by
+`r-base-dev` and `libxml2-dev`; Windows source builds use Rtools.
+
+# How a MARC record is structured
 
 A MARC record is not a conventional rectangular observation with one value for
 each variable. It is an ordered structured record. In its traditional
@@ -37,11 +67,10 @@ In conventional MARC notation, a title statement might look like:
 Here `245` is the field tag, `1` and `0` are the two indicators, `$a` contains
 the main title information, and `$c` contains the statement of responsibility.
 The meaning of a particular tag, indicator or subfield comes from MARC 21; for
-example, the Library of Congress documents the bibliographic format in the
+example, the Library of Congress documents these definitions in the
 [MARC 21 Format for Bibliographic Data](https://www.loc.gov/marc/bibliographic/).
 
-[MARCXML](https://www.loc.gov/standards/marcxml/) represents the same MARC
-structure as XML. The same title field can be written as:
+The same field in MARCXML is:
 
 ```xml
 <datafield tag="245" ind1="1" ind2="0">
@@ -55,7 +84,7 @@ elements are children of one particular `<datafield>` instance, and their order
 is explicit. Repeated sibling `<datafield>` elements remain distinct even if
 they have the same tag and indicators.
 
-A subject field gives another small example:
+A subject field gives another example:
 
 ```xml
 <datafield tag="650" ind1=" " ind2="0">
@@ -85,33 +114,30 @@ Consider two distinct subject fields:
 
 ```text
 650 _0 $a Totalitarianism $v Fiction
-650 _0 $a Politics $x Philosophy
+650 _0 $a Dystopias $v Fiction
 ```
 
-The first associates `$a Totalitarianism` with `$v Fiction`. The second
-associates `$a Politics` with `$x Philosophy`.
+These are two different `650` field instances. Each `$v Fiction` belongs to one
+particular occurrence of `650`.
 
 If values are flattened independently by tag and subfield code, we might obtain:
 
 ```text
-650$a = "Totalitarianism || Politics"
-650$v = "Fiction"
-650$x = "Philosophy"
+650$a = "Totalitarianism || Dystopias"
+650$v = "Fiction || Fiction"
 ```
 
-All values are still present, but one relationship has disappeared: it is no
-longer possible to infer with certainty which `$v` or `$x` belonged to which
-occurrence of field `650`.
+All values are still present, but field membership has disappeared. With more
+heterogeneous repeated fields, the original associations cannot in general be
+reconstructed unambiguously.
 
 The same problem appears inside a single field when a subfield code repeats:
 
 ```text
-700 1_ $a Smith, John $e editor $e translator
+856 40 $u https://example.org/1984 $y Full text $y Mirror
 ```
 
-The two `$e` values are two ordered occurrences of the same subfield code inside
-one specific `700` field instance.
-
+The two `$y` values are two ordered occurrences inside one specific `856` field.
 A faithful general representation therefore has to preserve several levels of
 identity and order:
 
@@ -139,17 +165,23 @@ The central idea of `marcxmlr` is a fixed **canonical representation** of MARC
 content. It is a long rectangular table with exactly 11 columns. The hierarchy
 has not disappeared: it has been translated into explicit coordinates.
 
-This representation is intended to satisfy two goals at the same time:
+The representation is designed to satisfy two goals at the same time:
 
 1. **structural fidelity** — records, field instances, indicators, repeated
    fields, repeated subfields and source order remain distinguishable; and
 2. **analytical usability** — the result is an ordinary R table that can be
    filtered, grouped, joined, reshaped and visualized with familiar tools.
 
-The canonical table is therefore a structural layer, not a prescribed final
-analytical table. One analysis may retain only titles and publishers, another
-may study repeated subject headings, and another may select or edit complete
-records before serializing them back to MARCXML.
+This second point is important. The canonical table is not merely an internal
+serialization format. It is intended to be pleasant to analyse. A librarian who
+knows that the main title is in `245 $a`, for example, can ask for rows where the
+tag is `245` and the subfield code is `a`; there is no need to formulate XPath
+expressions or navigate XML nodes during analysis.
+
+The canonical representation is therefore a **structural analytical layer**, not
+a prescribed final table. One analysis may retain only titles and publishers,
+another may study repeated subject headings, and another may select or edit
+complete records before serializing them back to MARCXML.
 
 ## What one canonical row represents
 
@@ -161,15 +193,14 @@ The row meaning depends on the MARC structure being represented:
 
 For a data field with several subfields, field-level information such as the tag,
 indicators and field position is repeated on every row belonging to that field.
-That repetition is intentional. It allows every row to carry enough context to
-remain directly useful in ordinary tabular operations while rows from the same
-field can still be recognised as belonging together.
+That repetition is deliberate. It lets each row carry enough context for direct
+analysis while still making it possible to identify which rows belong to the
+same field instance.
 
 MARC tags remain **values** in the `tag` column rather than becoming columns of
-their own. The schema therefore does not need to change when a catalogue contains
-an unusual but structurally valid field. The representation is tag-independent:
-MARC knowledge determines how the content should be interpreted, while the
-canonical model determines how its structure is preserved.
+their own. The schema therefore does not change when a catalogue contains an
+unusual but structurally valid field. MARC knowledge determines what a field
+means; the canonical representation determines how its structure is retained.
 
 ## The 11 columns
 
@@ -205,22 +236,25 @@ one-character string `" "`.
 **Structural coordinates.** `record_id`, `field_order` and `subfield_order` are
 the principal coordinates of the hierarchy. Rows from the same data field share
 the same `record_id` and `field_order`; `subfield_order` preserves the sequence
-inside that field. These coordinates retain the field boundaries and source
-ordering needed for faithful reconstruction.
+inside that field. These coordinates retain field membership and source order
+and are the coordinates needed for faithful reconstruction.
 
 **Analytical occurrence coordinates.** `field_occurrence` and
-`subfield_occurrence` number repetition in a way that is convenient for analysis.
-They are derived from the structure rather than being the authoritative source of
-serialization order, but they make questions such as “the second `650` in this
-record” or “the second `$y` in this `856`” directly expressible in ordinary R
-code.
+`subfield_occurrence` are derived conveniences for analysis. They number
+repetition directly, making questions such as “the second `650` in this record”
+or “the second `$y` in this `856`” easy to state. They are not the authoritative
+source of serialization order; `field_order` and `subfield_order` already encode
+that structure.
 
-That small amount of redundancy is deliberate. The canonical representation
-favours explicit, analyst-friendly structure over minimal storage of coordinates.
+The small amount of redundancy is intentional. Repeating field context and
+storing occurrence numbers makes the table easier to inspect, filter, group and
+join. The package favours an explicit **analyst-friendly** representation over a
+minimally encoded one.
 
-## A complete structural example
+## A complete example used throughout this README
 
-Consider this synthetic MARCXML record:
+The package bundles the following synthetic record as
+`inst/extdata/orwell-marcxml.xml`. Every example below refers to this same record.
 
 ```xml
 <record xmlns="http://www.loc.gov/MARC21/slim">
@@ -261,7 +295,7 @@ Consider this synthetic MARCXML record:
 </record>
 ```
 
-In canonical form, the structurally important repetitions remain explicit. For
+In canonical form, that one record becomes 16 rows and exactly 11 columns. For
 readability, `<blank>` below denotes the actual one-character indicator value
 `" "`:
 
@@ -284,13 +318,13 @@ readability, `<blank>` below denotes the actual one-character indicator value
 | 1 | datafield | 856 | y | Full text | 7 | 1 | 4 | 0 | 2 | 1 |
 | 1 | datafield | 856 | y | Mirror | 7 | 1 | 4 | 0 | 3 | 2 |
 
-Several points are visible directly:
+Several features are visible directly:
 
 * both `650` fields have the same tag but different `field_order` and
   `field_occurrence` values;
-* the subfields belonging to each `650` remain attached to the correct field
-  because their rows share the same `record_id` and `field_order`;
-* the two `856$y` values remain distinct, with `subfield_occurrence` values `1`
+* the two rows of each `650` share the same `field_order`, so `$a` and `$v`
+  remain attached to the correct field instance;
+* the two `856 $y` values remain distinct, with `subfield_occurrence` values `1`
   and `2`;
 * indicators remain attached to every row belonging to their data-field
   instance; and
@@ -298,27 +332,23 @@ Several points are visible directly:
 
 ## Why the representation is analyst-friendly
 
-For someone who already knows MARC 21, the canonical representation makes the
-transition from a catalogue question to R unusually direct. Familiar MARC
-content designations become conditions on stable columns rather than XML
-traversal instructions.
+For someone who knows MARC 21, catalogue questions translate naturally into
+conditions on documented columns. In plain language:
 
-For example:
-
-| Catalogue question | MARC designation | Canonical condition |
+| Catalogue question | MARC designation | Condition on the canonical table |
 |---|---|---|
-| What is the main title? | `245 $a` | `tag == "245" & subfield_code == "a"` |
-| Which publisher is named in the publication statement? | `264 #1 $b` | `tag == "264" & ind2 == "1" & subfield_code == "b"` |
-| Which is the second `650` field? | second `650` | `tag == "650" & field_occurrence == 2L` |
-| Which is the second `$y` inside an `856`? | second `856 $y` | `tag == "856" & subfield_code == "y" & subfield_occurrence == 2L` |
+| What is the main title? | `245 $a` | tag is `245` and subfield code is `a` |
+| Which publisher is named in the publication statement? | `264 #1 $b` | tag is `264`, second indicator is `1`, and subfield code is `b` |
+| Which is the second subject field? | second `650` | tag is `650` and field occurrence is `2` |
+| Which is the second link label? | second `856 $y` | tag is `856`, subfield code is `y`, and subfield occurrence is `2` |
 
-The package does not need to know that `245` is a title field or that `264 #1
-$b` identifies a publisher. That semantic knowledge comes from MARC 21. What
-`marcxmlr` provides is a stable representation in which that knowledge can be
-expressed with ordinary tabular operations.
+The package does not need to know that `245` is a title field or that
+`264 #1 $b` identifies a publisher. That semantic knowledge comes from MARC 21.
+`marcxmlr` provides a stable representation in which the corresponding
+conditions can be expressed with ordinary tabular operations.
 
-This is also why the canonical representation is deliberately richer than many
-final analytical products. It preserves relationships before the analyst knows
+This is why the representation is deliberately richer than many final
+analytical products. It preserves relationships before the analyst decides
 which ones can safely be discarded. **Canonical to simplified is easy;
 simplified to canonical may be impossible.**
 
@@ -334,35 +364,10 @@ This preserve-first principle is the package's main design choice: field
 membership, order or repetition discarded during import may be impossible to
 reconstruct unambiguously afterward.
 
-# Installation
+# Working with the same record in R
 
-Once the data model is clear, using the package is straightforward.
-
-Install the current CRAN release with:
-
-```r
-install.packages("marcxmlr")
-```
-
-To install the current development version from GitHub:
-
-```r
-# install.packages("pak")
-pak::pak("larry77/marcxmlr")
-```
-
-Source installation from GitHub requires a C toolchain and libxml2 development
-headers and libraries. On Debian and Ubuntu these are normally provided by
-`r-base-dev` and `libxml2-dev`; Windows source builds use Rtools.
-
-Both reading and writing support gzip-compressed MARCXML files such as
-`catalogue.xml.gz`. `write_marcxml()` automatically produces gzip-compressed
-output when the output filename ends in `.gz`.
-
-# Working with MARCXML in R
-
-The package includes a small MARCXML collection, so all examples in this section
-run without downloading external data.
+All examples below use the exact record shown above. It is bundled with the
+package, so nothing needs to be downloaded.
 
 ```r
 library(marcxmlr)
@@ -370,67 +375,59 @@ library(dplyr)
 
 source_xml <- system.file(
   "extdata",
-  "example-marcxml.xml",
+  "orwell-marcxml.xml",
   package = "marcxmlr"
 )
 
 marc <- read_marcxml(source_xml)
 
 dim(marc)
-#> [1] 18 11
+#> [1] 16 11
 ```
 
 The result is an ordinary tibble with the canonical columns described above.
-From this point on, MARC questions can be expressed as ordinary table queries.
+Now the plain-language conditions can be translated directly into `dplyr`.
 
-## Ask catalogue questions with `dplyr`
+## What is the main title?
 
-The examples below use exactly the same idea as the synthetic examples above:
-MARC knowledge identifies the content designation, while the canonical columns
-make it directly queryable.
-
-### What is the main title recorded for each item?
-
-In bibliographic MARC 21, the main title is recorded in `245 $a`. The query is
-therefore simply:
+MARC 21 says that the main title is in `245 $a`: tag is `245` and subfield code
+is `a`.
 
 ```r
 marc |>
   filter(tag == "245", subfield_code == "a") |>
   select(record_id, value)
-#> # A tibble: 2 × 2
+#> # A tibble: 1 × 2
 #>   record_id value
 #>       <int> <chr>
-#> 1         1 Scalable catalogues :
-#> 2         2 Café metadata & reproducible examples
+#> 1         1 Nineteen eighty-four /
 ```
 
-No XPath expression or XML traversal is needed once the source has been mapped
-to canonical columns.
+## Which publisher is named in the publication statement?
 
-### Who is named in the main-entry personal-name field?
-
-For the second bundled record, field `100 $a` contains the personal name:
+For this record, `264 #1 $b` identifies the publisher: tag is `264`, the second
+indicator is `1`, and the subfield code is `b`.
 
 ```r
 marc |>
-  filter(tag == "100", subfield_code == "a") |>
+  filter(tag == "264", ind2 == "1", subfield_code == "b") |>
   select(record_id, value)
 #> # A tibble: 1 × 2
 #>   record_id value
 #>       <int> <chr>
-#> 1         2 Example, Ana
+#> 1         1 Secker & Warburg,
 ```
 
-The important point is not that these particular fields are difficult to
-extract. It is that the same representation remains usable when tags repeat,
-subfields repeat, or a query has to preserve field membership.
+The important transition is from a catalogue question, to its MARC content
+designation, to ordinary table columns. XML traversal is no longer part of the
+analysis.
 
-### Which complete subject field contains `650 $a Libraries`?
+## Which complete subject field contains `650 $a Totalitarianism`?
 
-Filtering only the matching row would discard the associated `$x Data
-processing`. Grouping by `record_id` and `field_order` lets the condition select
-the complete MARC field instance:
+Sometimes the row that matches is not the whole answer. Here the question is
+not only to find `$a Totalitarianism`, but to keep the complete `650` field to
+which it belongs. Rows from one data-field instance share `record_id` and
+`field_order`, so the field can be selected as a group:
 
 ```r
 marc |>
@@ -439,7 +436,7 @@ marc |>
     any(
       tag == "650" &
         subfield_code == "a" &
-        value == "Libraries"
+        value == "Totalitarianism"
     )
   ) |>
   ungroup() |>
@@ -447,60 +444,47 @@ marc |>
 #> # A tibble: 2 × 5
 #>   record_id field_order tag   subfield_code value
 #>       <int>       <int> <chr> <chr>         <chr>
-#> 1         1           4 650   a             Libraries
-#> 2         1           4 650   x             Data processing
+#> 1         1           5 650   a             Totalitarianism
+#> 2         1           5 650   v             Fiction.
 ```
 
-The condition matches only `650 $a Libraries`, but the associated `$x` remains
-in the result because both rows share the same `record_id` and `field_order`.
-This is exactly the field relationship that a naive flattening can lose.
+The condition matches only `$a Totalitarianism`, but the result also contains
+its associated `$v Fiction.` because both rows belong to the same field.
 
-## Inspect repeated structure directly
+## Inspect repetition directly
 
-The first bundled record contains two `650` fields. The occurrence coordinate
-makes them easy to distinguish:
+The two subject fields remain separate:
 
 ```r
 marc |>
-  filter(record_id == 1L, tag == "650", subfield_code == "a") |>
+  filter(tag == "650", subfield_code == "a") |>
   select(record_id, field_order, field_occurrence, value)
 #> # A tibble: 2 × 4
 #>   record_id field_order field_occurrence value
 #>       <int>       <int>            <int> <chr>
-#> 1         1           4                1 Libraries
-#> 2         1           5                2 Metadata
+#> 1         1           5                1 Totalitarianism
+#> 2         1           6                2 Dystopias.
 ```
 
-The same record contains one `856` field with two `$y` subfields:
+Repetition inside one field is equally explicit:
 
 ```r
 marc |>
-  filter(record_id == 1L, tag == "856") |>
-  select(
-    subfield_code,
-    value,
-    subfield_order,
-    subfield_occurrence
-  )
+  filter(tag == "856") |>
+  select(subfield_code, value, subfield_order, subfield_occurrence)
 #> # A tibble: 3 × 4
-#>   subfield_code value                      subfield_order subfield_occurrence
-#>   <chr>         <chr>                               <int>               <int>
-#> 1 u             https://example.org/item/1              1                   1
-#> 2 y             Full text                               2                   1
-#> 3 y             Alternate access                        3                   2
+#>   subfield_code value                    subfield_order subfield_occurrence
+#>   <chr>         <chr>                             <int>               <int>
+#> 1 u             https://example.org/1984              1                   1
+#> 2 y             Full text                             2                   1
+#> 3 y             Mirror                                3                   2
 ```
-
-Field-level and subfield-level repetition are therefore both explicit rather
-than encoded in list columns or delimiter-separated strings.
 
 ## Derive a simpler analytical table
 
-The canonical representation preserves structure first; it does not require the
-analyst to keep all 11 columns forever. Once the purpose of an analysis is
-known, a simpler table can be derived deliberately.
-
-For example, suppose the desired result is one row per record with the main
-title and a collapsed summary of its subject fields:
+The canonical representation preserves structure first. A simpler table can
+then be derived deliberately for a particular analysis. For example, keep one
+title and collapse each `650` field to a readable subject string:
 
 ```r
 titles <- marc |>
@@ -521,21 +505,21 @@ subjects <- marc |>
   )
 
 left_join(titles, subjects, by = "record_id")
-#> # A tibble: 2 × 3
-#>   record_id title                                  subjects
-#>       <int> <chr>                                  <chr>
-#> 1         1 Scalable catalogues :                  Libraries ; Data processing | Metadata
-#> 2         2 Café metadata & reproducible examples <NA>
+#> # A tibble: 1 × 3
+#>   record_id title                    subjects
+#>       <int> <chr>                    <chr>
+#> 1         1 Nineteen eighty-four /   Totalitarianism ; Fiction. | Dystopias. ; Fiction.
 ```
 
-This is the intended asymmetry of the package. Collapsing canonical data is easy
-once the analytical purpose is known; reconstructing field membership and order
-from an already simplified table may be impossible.
+This is the intended asymmetry: once the MARC structure is preserved, it is easy
+to collapse it for a particular purpose. Reconstructing field membership after
+it has already been discarded may be impossible.
 
-## Modify repeated MARC data
+## Modify one repeated subfield
 
-A specific repeated value can be addressed through the occurrence coordinates.
-Here only the second `856 $y` value in record 1 is changed:
+Because `subfield_occurrence` makes repetition explicit, a particular repeated
+value can be changed without affecting its neighbour. Here only the second
+`856 $y` changes:
 
 ```r
 edited <- marc |>
@@ -551,20 +535,21 @@ edited <- marc |>
   )
 
 edited |>
-  filter(record_id == 1L, tag == "856") |>
+  filter(tag == "856") |>
   select(subfield_code, value, subfield_occurrence)
 #> # A tibble: 3 × 3
-#>   subfield_code value                      subfield_occurrence
-#>   <chr>         <chr>                                    <int>
-#> 1 u             https://example.org/item/1                   1
-#> 2 y             Full text                                    1
-#> 3 y             Backup access                                2
+#>   subfield_code value                    subfield_occurrence
+#>   <chr>         <chr>                                  <int>
+#> 1 u             https://example.org/1984                   1
+#> 2 y             Full text                                  1
+#> 3 y             Backup access                              2
 ```
 
 ## Diagnose before writing
 
-After filtering or modification, `diagnose_canonical()` can be used as an
-explicit structural preflight:
+After filtering or editing canonical data, `diagnose_canonical()` can inspect
+whether the representation still satisfies the structural contract required for
+safe serialization.
 
 ```r
 diagnostics <- diagnose_canonical(edited)
@@ -574,23 +559,18 @@ diagnostics
 #> #   field_order <int>, subfield_order <int>
 ```
 
-A zero-row diagnostics tibble means that no structural issue was found. When
-diagnostics are present, each row reports a severity, a diagnostic code, a
-human-readable message and the relevant record or position when available.
+An empty diagnostics tibble means that no structural issue was found. The
+function checks the canonical representation used by `marcxmlr`; it is not a
+complete MARC 21 content validator and does not replace MARCXML schema
+validation.
 
-An `error` identifies a structural problem that prevents safe serialization. A
-`warning` identifies something that deserves attention but does not make the
-represented MARC structure ambiguous. For example, occurrence coordinates may
-be stale or renumberable even when the structural ordering remains clear.
-
-`diagnose_canonical()` checks the structural contract required by `marcxmlr`.
-It is not a complete MARC 21 content validator and does not replace MARCXML
-schema validation.
+`write_marcxml()` performs the required structural checks itself before writing.
+Calling `diagnose_canonical()` explicitly is useful when data have been filtered
+or edited because the result can be inspected before any XML file is created.
 
 ## Write MARCXML and read it back
 
-`write_marcxml()` serializes coherent canonical data back to MARCXML. The writer
-performs the required structural checks before writing.
+A structurally coherent canonical table can be serialized again:
 
 ```r
 out_xml <- tempfile(fileext = ".xml")
@@ -601,21 +581,12 @@ identical(edited, roundtrip)
 #> [1] TRUE
 ```
 
-A useful related workflow is to select complete records and export them:
+The round trip preserves the MARC semantics represented by the canonical table,
+not incidental XML formatting such as indentation or attribute order.
 
-```r
-selected <- marc |>
-  filter(record_id == 1L)
+A complete record can likewise be selected and exported with ordinary table
+operations before writing.
 
-selected_xml <- tempfile(fileext = ".xml")
-write_marcxml(selected, selected_xml)
-
-identical(selected, read_marcxml(selected_xml))
-#> [1] TRUE
-```
-
-The selection or modification happens with ordinary R tools, while the output
-is again MARCXML that can be exchanged with software outside R.
 # Large collections and Parquet
 
 Both the in-memory and Parquet workflows use the same 11-column canonical
@@ -666,7 +637,7 @@ catalogue |>
 #> # A tibble: 1 × 1
 #>    rows
 #>   <int>
-#> 1    18
+#> 1    16
 ```
 
 The dataset can be filtered and aggregated with Arrow and `dplyr` before a

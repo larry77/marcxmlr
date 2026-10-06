@@ -34,8 +34,8 @@ This vignette follows one complete workflow:
 5. diagnose and serialize the canonical representation; and
 6. optionally move the same schema to a Parquet-backed workflow.
 
-All examples use the small MARCXML file bundled with the package, so the
-vignette is offline and quick to build.
+All examples use the same synthetic Orwell MARCXML record used in the README.
+It is bundled with the package, so the vignette is offline and quick to build.
 
 ## Read MARCXML
 
@@ -45,7 +45,7 @@ library(dplyr)
 
 source_xml <- system.file(
   "extdata",
-  "example-marcxml.xml",
+  "orwell-marcxml.xml",
   package = "marcxmlr"
 )
 
@@ -118,7 +118,7 @@ marc |>
     any(
       tag == "650" &
         subfield_code == "a" &
-        value == "Libraries"
+        value == "Totalitarianism"
     )
   ) |>
   ungroup() |>

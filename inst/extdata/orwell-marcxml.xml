@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<collection xmlns="http://www.loc.gov/MARC21/slim">
+  <record>
+    <leader>00000cam a2200000 i 4500</leader>
+    <controlfield tag="001">12345</controlfield>
+    <datafield tag="100" ind1="1" ind2=" ">
+      <subfield code="a">Orwell, George,</subfield>
+      <subfield code="d">1903-1950.</subfield>
+    </datafield>
+    <datafield tag="245" ind1="1" ind2="0">
+      <subfield code="a">Nineteen eighty-four /</subfield>
+      <subfield code="c">George Orwell.</subfield>
+    </datafield>
+    <datafield tag="264" ind1=" " ind2="1">
+      <subfield code="a">London :</subfield>
+      <subfield code="b">Secker &amp; Warburg,</subfield>
+      <subfield code="c">1949.</subfield>
+    </datafield>
+    <datafield tag="650" ind1=" " ind2="0">
+      <subfield code="a">Totalitarianism</subfield>
+      <subfield code="v">Fiction.</subfield>
+    </datafield>
+    <datafield tag="650" ind1=" " ind2="0">
+      <subfield code="a">Dystopias.</subfield>
+      <subfield code="v">Fiction.</subfield>
+    </datafield>
+    <datafield tag="856" ind1="4" ind2="0">
+      <subfield code="u">https://example.org/1984</subfield>
+      <subfield code="y">Full text</subfield>
+      <subfield code="y">Mirror</subfield>
+    </datafield>
+  </record>
+</collection>
