@@ -79,5 +79,6 @@ jobs:
             any::testthat
             any::knitr
             any::rmarkdown
+            any::dplyr
 
       - uses: r-lib/actions/check-r-package@v2
