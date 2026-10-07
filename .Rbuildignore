@@ -8,3 +8,4 @@
 ^src/Makevars$
 ^benchmark-results$
 ^configure\.log$
+^TECHNICAL\.md$

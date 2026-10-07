@@ -798,6 +798,1018 @@ SEXP attribute_visible C_marcxml_plan_close(SEXP ext) {
     return R_NilValue;
 }
 
+/* -------------------------------------------------------------------------
+ * Native MARC-record recovery engine
+ * -------------------------------------------------------------------------
+ * This is intentionally separate from the strict native planner/reader above.
+ * Strict mode therefore keeps exactly the same compiled path. Recovery mode
+ * scans the complete XML document, records structurally invalid MARC records,
+ * and plans only valid source records for the second pass. XML syntax/root
+ * failures are reported to R and are never treated as skippable MARC errors.
+ */
+
+enum {
+    MARCXML_RECOVER_VALID = 1,
+    MARCXML_RECOVER_INVALID = 0,
+    MARCXML_RECOVER_UNSUPPORTED = -1
+};
+
+enum {
+    MARCXML_RECERR_NONE = 0,
+    MARCXML_RECERR_FOREIGN_NAMESPACE = 1,
+    MARCXML_RECERR_INVALID_NESTING = 2,
+    MARCXML_RECERR_EMPTY_RECORD = 3,
+    MARCXML_RECERR_UNSUPPORTED_FIELD = 4,
+    MARCXML_RECERR_LEADER = 5,
+    MARCXML_RECERR_MISSING_TAG = 6,
+    MARCXML_RECERR_MISSING_IND1 = 7,
+    MARCXML_RECERR_MISSING_IND2 = 8,
+    MARCXML_RECERR_NO_SUBFIELD = 9,
+    MARCXML_RECERR_UNSUPPORTED_DATAFIELD_CHILD = 10,
+    MARCXML_RECERR_MISSING_CODE = 11
+};
+
+typedef struct {
+    char *path;
+    int mode;
+    int input_kind;
+    int root_namespace_kind;
+    R_xlen_t records_total;
+    R_xlen_t source_records_selected;
+    R_xlen_t records_valid;
+    R_xlen_t rows_valid;
+    R_xlen_t *rows_per_record;
+    R_xlen_t *source_record_per_valid;
+    R_xlen_t valid_capacity;
+    R_xlen_t skipped_records;
+    R_xlen_t *skipped_source_record;
+    int *skipped_reason_code;
+    char **skipped_control_number;
+    char **skipped_record_xml;
+    R_xlen_t skipped_capacity;
+} marcxml_recovery_plan_state;
+
+static int recovery_foreign_namespace(
+    xmlNodePtr node,
+    const xmlChar *record_ns
+) {
+    for (xmlNodePtr child = node->children; child; child = child->next) {
+        if (child->type != XML_ELEMENT_NODE) continue;
+        if (!xmlStrEqual(namespace_uri(child), record_ns)) return 1;
+        if (recovery_foreign_namespace(child, record_ns)) return 1;
+    }
+    return 0;
+}
+
+static int recovery_has_element_child(xmlNodePtr node) {
+    for (xmlNodePtr child = node->children; child; child = child->next) {
+        if (child->type == XML_ELEMENT_NODE) return 1;
+    }
+    return 0;
+}
+
+/* Recovery validation mirrors the public record-level structural contract for
+ * the common native subset. A return value of UNSUPPORTED means that the
+ * recovery fast path must decline rather than misclassify an unfamiliar but
+ * potentially valid record as malformed. */
+static int recovery_count_record_node(
+    xmlNodePtr root,
+    R_xlen_t *rows,
+    int *reason_code
+) {
+    *rows = 0;
+    *reason_code = MARCXML_RECERR_NONE;
+
+    if (!root || !named(root, "record")) {
+        return MARCXML_RECOVER_UNSUPPORTED;
+    }
+
+    if (!simple_attributes(root)) {
+        return MARCXML_RECOVER_UNSUPPORTED;
+    }
+
+    const xmlChar *ns = namespace_uri(root);
+    if (ns[0] &&
+        !xmlStrEqual(ns, BAD_CAST "http://www.loc.gov/MARC21/slim")) {
+        *reason_code = MARCXML_RECERR_FOREIGN_NAMESPACE;
+        return MARCXML_RECOVER_INVALID;
+    }
+
+    if (recovery_foreign_namespace(root, ns)) {
+        *reason_code = MARCXML_RECERR_FOREIGN_NAMESPACE;
+        return MARCXML_RECOVER_INVALID;
+    }
+
+    /* Match the reference parser's invalid-nesting precedence. */
+    for (xmlNodePtr field = root->children; field; field = field->next) {
+        if (field->type != XML_ELEMENT_NODE) {
+            if (!ignorable(field)) return MARCXML_RECOVER_UNSUPPORTED;
+            continue;
+        }
+
+        if (!simple_attributes(field)) {
+            return MARCXML_RECOVER_UNSUPPORTED;
+        }
+
+        if (named(field, "leader") || named(field, "controlfield")) {
+            if (recovery_has_element_child(field)) {
+                *reason_code = MARCXML_RECERR_INVALID_NESTING;
+                return MARCXML_RECOVER_INVALID;
+            }
+        } else if (named(field, "datafield")) {
+            for (xmlNodePtr sub = field->children; sub; sub = sub->next) {
+                if (sub->type != XML_ELEMENT_NODE) {
+                    if (!ignorable(sub)) return MARCXML_RECOVER_UNSUPPORTED;
+                    continue;
+                }
+                if (recovery_has_element_child(sub)) {
+                    *reason_code = MARCXML_RECERR_INVALID_NESTING;
+                    return MARCXML_RECOVER_INVALID;
+                }
+            }
+        }
+    }
+
+    int field_count = 0;
+    int leader_count = 0;
+    int leader_position = 0;
+
+    for (xmlNodePtr field = root->children; field; field = field->next) {
+        if (field->type != XML_ELEMENT_NODE) continue;
+        if (field_count == INT_MAX) return MARCXML_RECOVER_UNSUPPORTED;
+        ++field_count;
+
+        if (named(field, "leader")) {
+            ++leader_count;
+            if (leader_count == 1) leader_position = field_count;
+        } else if (!named(field, "controlfield") &&
+                   !named(field, "datafield")) {
+            *reason_code = MARCXML_RECERR_UNSUPPORTED_FIELD;
+            return MARCXML_RECOVER_INVALID;
+        }
+    }
+
+    if (field_count == 0) {
+        *reason_code = MARCXML_RECERR_EMPTY_RECORD;
+        return MARCXML_RECOVER_INVALID;
+    }
+
+    if (leader_count != 1 || leader_position != 1) {
+        *reason_code = MARCXML_RECERR_LEADER;
+        return MARCXML_RECOVER_INVALID;
+    }
+
+    /* Validate attributes in the same broad order as the R reference parser. */
+    for (xmlNodePtr field = root->children; field; field = field->next) {
+        if (field->type != XML_ELEMENT_NODE || named(field, "leader")) continue;
+        if (!nonempty(attribute(field, "tag"))) {
+            *reason_code = MARCXML_RECERR_MISSING_TAG;
+            return MARCXML_RECOVER_INVALID;
+        }
+    }
+
+    for (xmlNodePtr field = root->children; field; field = field->next) {
+        if (field->type != XML_ELEMENT_NODE || !named(field, "datafield")) continue;
+        if (!nonempty(attribute(field, "ind1"))) {
+            *reason_code = MARCXML_RECERR_MISSING_IND1;
+            return MARCXML_RECOVER_INVALID;
+        }
+    }
+
+    for (xmlNodePtr field = root->children; field; field = field->next) {
+        if (field->type != XML_ELEMENT_NODE || !named(field, "datafield")) continue;
+        if (!nonempty(attribute(field, "ind2"))) {
+            *reason_code = MARCXML_RECERR_MISSING_IND2;
+            return MARCXML_RECOVER_INVALID;
+        }
+    }
+
+    for (xmlNodePtr field = root->children; field; field = field->next) {
+        if (field->type != XML_ELEMENT_NODE) continue;
+
+        if (named(field, "leader") || named(field, "controlfield")) {
+            if (!text_only(field)) return MARCXML_RECOVER_UNSUPPORTED;
+            if (*rows == R_XLEN_T_MAX) return MARCXML_RECOVER_UNSUPPORTED;
+            ++*rows;
+            continue;
+        }
+
+        int subfield_count = 0;
+        for (xmlNodePtr sub = field->children; sub; sub = sub->next) {
+            if (sub->type != XML_ELEMENT_NODE) {
+                if (!ignorable(sub)) return MARCXML_RECOVER_UNSUPPORTED;
+                continue;
+            }
+
+            if (subfield_count == INT_MAX) return MARCXML_RECOVER_UNSUPPORTED;
+            ++subfield_count;
+
+            if (!named(sub, "subfield")) {
+                *reason_code = MARCXML_RECERR_UNSUPPORTED_DATAFIELD_CHILD;
+                return MARCXML_RECOVER_INVALID;
+            }
+            if (!simple_attributes(sub)) return MARCXML_RECOVER_UNSUPPORTED;
+            if (!nonempty(attribute(sub, "code"))) {
+                *reason_code = MARCXML_RECERR_MISSING_CODE;
+                return MARCXML_RECOVER_INVALID;
+            }
+            if (!text_only(sub)) return MARCXML_RECOVER_UNSUPPORTED;
+            if (*rows == R_XLEN_T_MAX) return MARCXML_RECOVER_UNSUPPORTED;
+            ++*rows;
+        }
+
+        if (subfield_count == 0) {
+            *reason_code = MARCXML_RECERR_NO_SUBFIELD;
+            return MARCXML_RECOVER_INVALID;
+        }
+    }
+
+    if (*rows > INT_MAX) return MARCXML_RECOVER_UNSUPPORTED;
+    return MARCXML_RECOVER_VALID;
+}
+
+static char *recovery_control_number(xmlNodePtr root) {
+    const xmlChar *ns = namespace_uri(root);
+
+    for (xmlNodePtr field = root->children; field; field = field->next) {
+        if (field->type != XML_ELEMENT_NODE ||
+            !named(field, "controlfield") ||
+            !xmlStrEqual(namespace_uri(field), ns)) {
+            continue;
+        }
+
+        const xmlChar *tag = attribute(field, "tag");
+        if (!tag || !xmlStrEqual(tag, BAD_CAST "001")) continue;
+
+        xmlChar *content = xmlNodeGetContent(field);
+        if (!content) return NULL;
+        char *copy = copy_c_string((const char *)content);
+        xmlFree(content);
+        return copy;
+    }
+
+    return NULL;
+}
+
+static char *recovery_record_xml(xmlNodePtr node) {
+    xmlBufferPtr buffer = xmlBufferCreate();
+    if (!buffer) return NULL;
+
+    int written = xmlNodeDump(buffer, node->doc, node, 0, 0);
+    if (written < 0 || !xmlBufferContent(buffer)) {
+        xmlBufferFree(buffer);
+        return NULL;
+    }
+
+    char *copy = copy_c_string((const char *)xmlBufferContent(buffer));
+    xmlBufferFree(buffer);
+    return copy;
+}
+
+static void recovery_plan_free(marcxml_recovery_plan_state *plan) {
+    if (!plan) return;
+
+    free(plan->path);
+    free(plan->rows_per_record);
+    free(plan->source_record_per_valid);
+    free(plan->skipped_source_record);
+    free(plan->skipped_reason_code);
+
+    if (plan->skipped_control_number) {
+        for (R_xlen_t i = 0; i < plan->skipped_records; ++i) {
+            free(plan->skipped_control_number[i]);
+        }
+    }
+    if (plan->skipped_record_xml) {
+        for (R_xlen_t i = 0; i < plan->skipped_records; ++i) {
+            free(plan->skipped_record_xml[i]);
+        }
+    }
+
+    free(plan->skipped_control_number);
+    free(plan->skipped_record_xml);
+    free(plan);
+}
+
+static int recovery_append_valid(
+    marcxml_recovery_plan_state *plan,
+    R_xlen_t source_record,
+    R_xlen_t rows
+) {
+    if (plan->records_valid == R_XLEN_T_MAX) return 0;
+    if (rows > R_XLEN_T_MAX - plan->rows_valid) return 0;
+
+    R_xlen_t needed = plan->records_valid + 1;
+    if (needed > plan->valid_capacity) {
+        R_xlen_t new_capacity = plan->valid_capacity ? plan->valid_capacity : 1024;
+        while (new_capacity < needed) {
+            if (new_capacity > R_XLEN_T_MAX / 2) {
+                new_capacity = needed;
+                break;
+            }
+            new_capacity *= 2;
+        }
+
+        if ((uint64_t)new_capacity > (uint64_t)SIZE_MAX / sizeof(R_xlen_t)) {
+            return 0;
+        }
+
+        R_xlen_t *new_rows = (R_xlen_t *)realloc(
+            plan->rows_per_record,
+            (size_t)new_capacity * sizeof(R_xlen_t)
+        );
+        if (!new_rows) return 0;
+        plan->rows_per_record = new_rows;
+
+        R_xlen_t *new_sources = (R_xlen_t *)realloc(
+            plan->source_record_per_valid,
+            (size_t)new_capacity * sizeof(R_xlen_t)
+        );
+        if (!new_sources) return 0;
+        plan->source_record_per_valid = new_sources;
+        plan->valid_capacity = new_capacity;
+    }
+
+    plan->rows_per_record[plan->records_valid] = rows;
+    plan->source_record_per_valid[plan->records_valid] = source_record;
+    plan->records_valid = needed;
+    plan->rows_valid += rows;
+    return 1;
+}
+
+static int recovery_append_skip(
+    marcxml_recovery_plan_state *plan,
+    R_xlen_t source_record,
+    int reason_code,
+    xmlNodePtr node
+) {
+    if (plan->skipped_records == R_XLEN_T_MAX) return 0;
+
+    char *control = recovery_control_number(node);
+    char *record_xml = recovery_record_xml(node);
+    if (!record_xml) {
+        free(control);
+        return 0;
+    }
+
+    R_xlen_t needed = plan->skipped_records + 1;
+    if (needed > plan->skipped_capacity) {
+        R_xlen_t new_capacity = plan->skipped_capacity ? plan->skipped_capacity : 16;
+        while (new_capacity < needed) {
+            if (new_capacity > R_XLEN_T_MAX / 2) {
+                new_capacity = needed;
+                break;
+            }
+            new_capacity *= 2;
+        }
+
+        if ((uint64_t)new_capacity > (uint64_t)SIZE_MAX / sizeof(R_xlen_t) ||
+            (uint64_t)new_capacity > (uint64_t)SIZE_MAX / sizeof(int) ||
+            (uint64_t)new_capacity > (uint64_t)SIZE_MAX / sizeof(char *)) {
+            free(control);
+            free(record_xml);
+            return 0;
+        }
+
+        R_xlen_t *new_sources = (R_xlen_t *)realloc(
+            plan->skipped_source_record,
+            (size_t)new_capacity * sizeof(R_xlen_t)
+        );
+        if (!new_sources) {
+            free(control);
+            free(record_xml);
+            return 0;
+        }
+        plan->skipped_source_record = new_sources;
+
+        int *new_reasons = (int *)realloc(
+            plan->skipped_reason_code,
+            (size_t)new_capacity * sizeof(int)
+        );
+        if (!new_reasons) {
+            free(control);
+            free(record_xml);
+            return 0;
+        }
+        plan->skipped_reason_code = new_reasons;
+
+        char **new_controls = (char **)realloc(
+            plan->skipped_control_number,
+            (size_t)new_capacity * sizeof(char *)
+        );
+        if (!new_controls) {
+            free(control);
+            free(record_xml);
+            return 0;
+        }
+        plan->skipped_control_number = new_controls;
+
+        char **new_xml = (char **)realloc(
+            plan->skipped_record_xml,
+            (size_t)new_capacity * sizeof(char *)
+        );
+        if (!new_xml) {
+            free(control);
+            free(record_xml);
+            return 0;
+        }
+        plan->skipped_record_xml = new_xml;
+        plan->skipped_capacity = new_capacity;
+    }
+
+    R_xlen_t index = plan->skipped_records;
+    plan->skipped_source_record[index] = source_record;
+    plan->skipped_reason_code[index] = reason_code;
+    plan->skipped_control_number[index] = control;
+    plan->skipped_record_xml[index] = record_xml;
+    plan->skipped_records = needed;
+    return 1;
+}
+
+static SEXP recovery_plan_tag(void) {
+    return Rf_install("marcxmlr_native_recovery_plan");
+}
+
+static void recovery_plan_finalizer(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP) return;
+
+    marcxml_recovery_plan_state *plan =
+        (marcxml_recovery_plan_state *)R_ExternalPtrAddr(ext);
+    if (!plan) return;
+
+    recovery_plan_free(plan);
+    R_ClearExternalPtr(ext);
+}
+
+static marcxml_recovery_plan_state *recovery_plan_state(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP ||
+        R_ExternalPtrTag(ext) != recovery_plan_tag()) {
+        Rf_error("Invalid native MARCXML recovery plan.");
+    }
+
+    marcxml_recovery_plan_state *plan =
+        (marcxml_recovery_plan_state *)R_ExternalPtrAddr(ext);
+    if (!plan) Rf_error("Native MARCXML recovery plan is closed.");
+    return plan;
+}
+
+SEXP attribute_visible C_marcxml_recovery_plan_open(
+    SEXP path,
+    SEXP mode,
+    SEXP n_max
+) {
+    if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1 ||
+        STRING_ELT(path, 0) == NA_STRING ||
+        TYPEOF(mode) != INTSXP || XLENGTH(mode) != 1 ||
+        INTEGER(mode)[0] < MARCXML_PLAN_READ ||
+        INTEGER(mode)[0] > MARCXML_PLAN_STREAM ||
+        TYPEOF(n_max) != REALSXP || XLENGTH(n_max) != 1 ||
+        ISNA(REAL(n_max)[0]) || REAL(n_max)[0] < 0) {
+        Rf_error("Invalid native MARCXML recovery planner inputs.");
+    }
+
+    double limit = REAL(n_max)[0];
+    if (R_FINITE(limit) && limit != floor(limit)) {
+        Rf_error("Invalid native MARCXML recovery planner n_max.");
+    }
+
+    const char *file = Rf_translateCharUTF8(STRING_ELT(path, 0));
+    int options = XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING;
+    xmlTextReaderPtr reader = xmlReaderForFile(file, NULL, options);
+    if (!reader) {
+        return plan_result("decline", plan_reason_string(1), R_NilValue);
+    }
+    xmlTextReaderSetStructuredErrorHandler(reader, quiet_error, NULL);
+
+    marcxml_recovery_plan_state *plan =
+        (marcxml_recovery_plan_state *)calloc(1, sizeof(marcxml_recovery_plan_state));
+    if (!plan) {
+        xmlFreeTextReader(reader);
+        Rf_error("Could not allocate native MARCXML recovery planner.");
+    }
+
+    plan->path = copy_c_string(file);
+    if (!plan->path) {
+        xmlFreeTextReader(reader);
+        recovery_plan_free(plan);
+        Rf_error("Could not allocate native MARCXML recovery planner path.");
+    }
+    plan->mode = INTEGER(mode)[0];
+
+    int root_seen = 0;
+    int root_namespace = -2;
+    int decline_reason = 0;
+    int rc = xmlTextReaderRead(reader);
+
+    while (rc == 1 && decline_reason == 0) {
+        int type = xmlTextReaderNodeType(reader);
+        int depth = xmlTextReaderDepth(reader);
+
+        if (type == XML_READER_TYPE_DOCUMENT_TYPE) {
+            decline_reason = 3;
+            break;
+        }
+
+        if (type == XML_READER_TYPE_ELEMENT && depth == 0) {
+            if (root_seen) {
+                decline_reason = 4;
+                break;
+            }
+
+            root_seen = 1;
+            root_namespace = reader_namespace_kind(reader);
+            if (root_namespace < 0) {
+                decline_reason = 5;
+                break;
+            }
+            plan->root_namespace_kind = root_namespace;
+
+            if (reader_named(reader, "collection")) {
+                plan->input_kind = MARCXML_ROOT_COLLECTION;
+            } else if (plan->mode == MARCXML_PLAN_READ &&
+                       reader_named(reader, "record")) {
+                plan->input_kind = MARCXML_ROOT_RECORD;
+            } else {
+                decline_reason = 4;
+                break;
+            }
+
+            if (plan->input_kind == MARCXML_ROOT_RECORD) {
+                plan->records_total = 1;
+                int selected = !R_FINITE(limit) || limit >= 1.0;
+                if (selected) {
+                    plan->source_records_selected = 1;
+                    xmlNodePtr node = xmlTextReaderExpand(reader);
+                    R_xlen_t rows = 0;
+                    int reason_code = MARCXML_RECERR_NONE;
+                    if (!node) {
+                        decline_reason = 2;
+                        break;
+                    }
+
+                    int validation = recovery_count_record_node(
+                        node, &rows, &reason_code
+                    );
+                    if (validation == MARCXML_RECOVER_UNSUPPORTED) {
+                        decline_reason = 7;
+                        break;
+                    } else if (validation == MARCXML_RECOVER_INVALID) {
+                        if (!recovery_append_skip(plan, 1, reason_code, node)) {
+                            xmlFreeTextReader(reader);
+                            recovery_plan_free(plan);
+                            Rf_error("Could not extend native MARCXML recovery diagnostics.");
+                        }
+                    } else if (!recovery_append_valid(plan, 1, rows)) {
+                        xmlFreeTextReader(reader);
+                        recovery_plan_free(plan);
+                        Rf_error("Could not extend native MARCXML recovery planner.");
+                    }
+                }
+
+                rc = xmlTextReaderNext(reader);
+                continue;
+            }
+        } else if (type == XML_READER_TYPE_ELEMENT && depth == 1 &&
+                   plan->input_kind == MARCXML_ROOT_COLLECTION) {
+            if (!reader_named(reader, "record")) {
+                decline_reason = 6;
+                break;
+            }
+
+            int record_namespace = reader_namespace_kind(reader);
+            if (record_namespace < 0 || record_namespace != root_namespace) {
+                decline_reason = 5;
+                break;
+            }
+
+            if (plan->records_total == R_XLEN_T_MAX) {
+                xmlFreeTextReader(reader);
+                recovery_plan_free(plan);
+                Rf_error("Native MARCXML recovery planner record count is too large.");
+            }
+
+            plan->records_total += 1;
+            int selected = plan->mode == MARCXML_PLAN_STREAM ||
+                !R_FINITE(limit) || (double)plan->records_total <= limit;
+
+            if (selected) {
+                plan->source_records_selected += 1;
+                xmlNodePtr node = xmlTextReaderExpand(reader);
+                R_xlen_t rows = 0;
+                int reason_code = MARCXML_RECERR_NONE;
+                if (!node) {
+                    decline_reason = 2;
+                    break;
+                }
+
+                int validation = recovery_count_record_node(
+                    node, &rows, &reason_code
+                );
+                if (validation == MARCXML_RECOVER_UNSUPPORTED) {
+                    decline_reason = 7;
+                    break;
+                } else if (validation == MARCXML_RECOVER_INVALID) {
+                    if (!recovery_append_skip(
+                            plan, plan->records_total, reason_code, node)) {
+                        xmlFreeTextReader(reader);
+                        recovery_plan_free(plan);
+                        Rf_error("Could not extend native MARCXML recovery diagnostics.");
+                    }
+                } else if (!recovery_append_valid(
+                               plan, plan->records_total, rows)) {
+                    xmlFreeTextReader(reader);
+                    recovery_plan_free(plan);
+                    Rf_error("Could not extend native MARCXML recovery planner.");
+                }
+            }
+
+            rc = xmlTextReaderNext(reader);
+            continue;
+        }
+
+        rc = xmlTextReaderRead(reader);
+    }
+
+    if (rc < 0 && decline_reason == 0) decline_reason = 2;
+    if (!root_seen && decline_reason == 0) decline_reason = 4;
+    xmlFreeTextReader(reader);
+
+    if (decline_reason != 0) {
+        const char *reason = plan_reason_string(decline_reason);
+        recovery_plan_free(plan);
+        return plan_result("decline", reason, R_NilValue);
+    }
+
+    SEXP ext = PROTECT(R_MakeExternalPtr(plan, recovery_plan_tag(), R_NilValue));
+    R_RegisterCFinalizerEx(ext, recovery_plan_finalizer, TRUE);
+    SEXP out = PROTECT(plan_result("supported", NULL, ext));
+    UNPROTECT(2);
+    return out;
+}
+
+SEXP attribute_visible C_marcxml_recovery_plan_info(SEXP ext) {
+    marcxml_recovery_plan_state *plan = recovery_plan_state(ext);
+
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, 11));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, 11));
+    SEXP rows = PROTECT(Rf_allocVector(REALSXP, plan->records_valid));
+    SEXP valid_sources = PROTECT(Rf_allocVector(REALSXP, plan->records_valid));
+    SEXP skipped_sources = PROTECT(Rf_allocVector(REALSXP, plan->skipped_records));
+    SEXP reason_codes = PROTECT(Rf_allocVector(INTSXP, plan->skipped_records));
+    SEXP controls = PROTECT(Rf_allocVector(STRSXP, plan->skipped_records));
+    SEXP record_xml = PROTECT(Rf_allocVector(STRSXP, plan->skipped_records));
+
+    for (R_xlen_t i = 0; i < plan->records_valid; ++i) {
+        REAL(rows)[i] = (double)plan->rows_per_record[i];
+        REAL(valid_sources)[i] = (double)plan->source_record_per_valid[i];
+    }
+
+    for (R_xlen_t i = 0; i < plan->skipped_records; ++i) {
+        REAL(skipped_sources)[i] = (double)plan->skipped_source_record[i];
+        INTEGER(reason_codes)[i] = plan->skipped_reason_code[i];
+        if (plan->skipped_control_number[i]) {
+            SET_STRING_ELT(controls, i, Rf_mkCharCE(plan->skipped_control_number[i], CE_UTF8));
+        } else {
+            SET_STRING_ELT(controls, i, NA_STRING);
+        }
+        SET_STRING_ELT(record_xml, i, Rf_mkCharCE(plan->skipped_record_xml[i], CE_UTF8));
+    }
+
+    const char *mode_name = plan->mode == MARCXML_PLAN_READ ? "read" : "stream";
+    const char *kind_name = plan->input_kind == MARCXML_ROOT_RECORD ? "record" : "collection";
+    const char *name_values[] = {
+        "path", "mode", "input_kind", "records_total",
+        "source_records_selected", "records_valid", "skipped_records",
+        "rows_valid", "rows_per_record", "source_record_per_valid", "diagnostics"
+    };
+    for (int i = 0; i < 11; ++i) SET_STRING_ELT(names, i, Rf_mkChar(name_values[i]));
+
+    SEXP diagnostics = PROTECT(Rf_allocVector(VECSXP, 4));
+    SEXP diagnostic_names = PROTECT(Rf_allocVector(STRSXP, 4));
+    const char *diag_names[] = {"source_record", "reason_code", "control_number", "record_xml"};
+    for (int i = 0; i < 4; ++i) SET_STRING_ELT(diagnostic_names, i, Rf_mkChar(diag_names[i]));
+    SET_VECTOR_ELT(diagnostics, 0, skipped_sources);
+    SET_VECTOR_ELT(diagnostics, 1, reason_codes);
+    SET_VECTOR_ELT(diagnostics, 2, controls);
+    SET_VECTOR_ELT(diagnostics, 3, record_xml);
+    Rf_setAttrib(diagnostics, R_NamesSymbol, diagnostic_names);
+
+    SET_VECTOR_ELT(out, 0, Rf_mkString(plan->path));
+    SET_VECTOR_ELT(out, 1, Rf_mkString(mode_name));
+    SET_VECTOR_ELT(out, 2, Rf_mkString(kind_name));
+    SET_VECTOR_ELT(out, 3, Rf_ScalarReal((double)plan->records_total));
+    SET_VECTOR_ELT(out, 4, Rf_ScalarReal((double)plan->source_records_selected));
+    SET_VECTOR_ELT(out, 5, Rf_ScalarReal((double)plan->records_valid));
+    SET_VECTOR_ELT(out, 6, Rf_ScalarReal((double)plan->skipped_records));
+    SET_VECTOR_ELT(out, 7, Rf_ScalarReal((double)plan->rows_valid));
+    SET_VECTOR_ELT(out, 8, rows);
+    SET_VECTOR_ELT(out, 9, valid_sources);
+    SET_VECTOR_ELT(out, 10, diagnostics);
+    Rf_setAttrib(out, R_NamesSymbol, names);
+
+    UNPROTECT(10);
+    return out;
+}
+
+SEXP attribute_visible C_marcxml_recovery_plan_close(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP || R_ExternalPtrTag(ext) != recovery_plan_tag()) {
+        Rf_error("Invalid native MARCXML recovery plan.");
+    }
+    recovery_plan_finalizer(ext);
+    return R_NilValue;
+}
+
+
+typedef struct {
+    char *path;
+    int input_kind;
+    int root_namespace_kind;
+    R_xlen_t records_valid;
+    R_xlen_t *rows_per_record;
+    R_xlen_t *source_record_per_valid;
+    R_xlen_t next_valid;
+    R_xlen_t source_seen;
+    xmlTextReaderPtr reader;
+    int rc;
+    int root_seen;
+    int failed;
+    xmlChar *text;
+} recovery_batch_state;
+
+static SEXP recovery_batch_tag(void) {
+    return Rf_install("marcxmlr_recovery_batch_reader");
+}
+
+static void recovery_batch_state_free(recovery_batch_state *state) {
+    if (!state) return;
+    if (state->text) xmlFree(state->text);
+    if (state->reader) xmlFreeTextReader(state->reader);
+    free(state->path);
+    free(state->rows_per_record);
+    free(state->source_record_per_valid);
+    free(state);
+}
+
+static void recovery_batch_finalizer(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP) return;
+    recovery_batch_state *state =
+        (recovery_batch_state *)R_ExternalPtrAddr(ext);
+    if (!state) return;
+    recovery_batch_state_free(state);
+    R_ClearExternalPtr(ext);
+}
+
+static recovery_batch_state *recovery_batch_reader_state(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP || R_ExternalPtrTag(ext) != recovery_batch_tag()) {
+        Rf_error("Invalid native MARCXML recovery batch reader.");
+    }
+    recovery_batch_state *state =
+        (recovery_batch_state *)R_ExternalPtrAddr(ext);
+    if (!state) Rf_error("Native MARCXML recovery batch reader is closed.");
+    if (state->failed) {
+        Rf_error("Native MARCXML recovery batch reader is unusable after a previous failure.");
+    }
+    return state;
+}
+
+static void recovery_batch_fail(recovery_batch_state *state, const char *message) {
+    state->failed = 1;
+    Rf_error("%s", message);
+}
+
+SEXP attribute_visible C_marcxml_recovery_reader_open(SEXP plan_ext) {
+    marcxml_recovery_plan_state *plan = recovery_plan_state(plan_ext);
+    recovery_batch_state *state =
+        (recovery_batch_state *)calloc(1, sizeof(recovery_batch_state));
+    if (!state) Rf_error("Could not allocate native MARCXML recovery batch reader.");
+
+    state->path = copy_c_string(plan->path);
+    state->input_kind = plan->input_kind;
+    state->root_namespace_kind = plan->root_namespace_kind;
+    state->records_valid = plan->records_valid;
+    if (!state->path) {
+        recovery_batch_state_free(state);
+        Rf_error("Could not copy native MARCXML recovery plan path.");
+    }
+
+    if (plan->records_valid > 0) {
+        if ((uint64_t)plan->records_valid > (uint64_t)SIZE_MAX / sizeof(R_xlen_t)) {
+            recovery_batch_state_free(state);
+            Rf_error("Native MARCXML recovery plan is too large.");
+        }
+
+        size_t bytes = (size_t)plan->records_valid * sizeof(R_xlen_t);
+        state->rows_per_record = (R_xlen_t *)malloc(bytes);
+        state->source_record_per_valid = (R_xlen_t *)malloc(bytes);
+        if (!state->rows_per_record || !state->source_record_per_valid) {
+            recovery_batch_state_free(state);
+            Rf_error("Could not copy native MARCXML recovery plan.");
+        }
+        memcpy(state->rows_per_record, plan->rows_per_record, bytes);
+        memcpy(state->source_record_per_valid, plan->source_record_per_valid, bytes);
+
+        int options = XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING;
+        state->reader = xmlReaderForFile(state->path, NULL, options);
+        if (!state->reader) {
+            recovery_batch_state_free(state);
+            Rf_error("Could not reopen MARCXML input for native recovery writing.");
+        }
+        xmlTextReaderSetStructuredErrorHandler(state->reader, quiet_error, NULL);
+        state->rc = xmlTextReaderRead(state->reader);
+        if (state->rc != 1) {
+            recovery_batch_state_free(state);
+            Rf_error("MARCXML input became unreadable after recovery planning.");
+        }
+    }
+
+    SEXP ext = PROTECT(R_MakeExternalPtr(state, recovery_batch_tag(), R_NilValue));
+    R_RegisterCFinalizerEx(ext, recovery_batch_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+
+SEXP attribute_visible C_marcxml_recovery_reader_next(SEXP ext, SEXP maximum) {
+    recovery_batch_state *state = recovery_batch_reader_state(ext);
+    if (TYPEOF(maximum) != INTSXP || XLENGTH(maximum) != 1 ||
+        INTEGER(maximum)[0] == NA_INTEGER || INTEGER(maximum)[0] < 1) {
+        Rf_error("Invalid native MARCXML recovery batch size.");
+    }
+
+    if (state->next_valid >= state->records_valid) return R_NilValue;
+
+    R_xlen_t remaining = state->records_valid - state->next_valid;
+    R_xlen_t record_limit = (R_xlen_t)INTEGER(maximum)[0];
+    if (record_limit > remaining) record_limit = remaining;
+
+    R_xlen_t total_rows = 0;
+    R_xlen_t max_rows = 0;
+    for (R_xlen_t i = 0; i < record_limit; ++i) {
+        R_xlen_t rows = state->rows_per_record[state->next_valid + i];
+        if (rows > R_XLEN_T_MAX - total_rows) {
+            Rf_error("Native MARCXML recovery batch is too large.");
+        }
+        total_rows += rows;
+        if (rows > max_rows) max_rows = rows;
+    }
+
+    SEXP columns = PROTECT(Rf_allocVector(VECSXP, 11));
+    SEXP column_names_sexp = PROTECT(Rf_allocVector(STRSXP, 11));
+    SEXP cols[11];
+    for (int col = 0; col < 11; ++col) {
+        cols[col] = Rf_allocVector(column_types[col], total_rows);
+        SET_VECTOR_ELT(columns, col, cols[col]);
+        SET_STRING_ELT(column_names_sexp, col, Rf_mkChar(column_names[col]));
+        if (column_types[col] == INTSXP) {
+            for (R_xlen_t row = 0; row < total_rows; ++row) INTEGER(cols[col])[row] = NA_INTEGER;
+        } else {
+            for (R_xlen_t row = 0; row < total_rows; ++row) SET_STRING_ELT(cols[col], row, NA_STRING);
+        }
+    }
+    Rf_setAttrib(columns, R_NamesSymbol, column_names_sexp);
+
+    size_t cap = table_capacity(max_rows);
+    occurrence_slot *fields = (occurrence_slot *)R_alloc(cap, sizeof(occurrence_slot));
+    occurrence_slot *subs = (occurrence_slot *)R_alloc(cap, sizeof(occurrence_slot));
+
+    R_xlen_t first_record = state->source_record_per_valid[state->next_valid];
+    R_xlen_t records_written = 0;
+    R_xlen_t output_row = 0;
+
+    while (state->rc == 1 && records_written < record_limit) {
+        int type = xmlTextReaderNodeType(state->reader);
+        int depth = xmlTextReaderDepth(state->reader);
+
+        if (type == XML_READER_TYPE_DOCUMENT_TYPE) {
+            recovery_batch_fail(state, "MARCXML input no longer matches the native recovery plan.");
+        }
+
+        if (type == XML_READER_TYPE_ELEMENT && depth == 0) {
+            if (state->root_seen) {
+                recovery_batch_fail(state, "MARCXML input no longer matches the native recovery plan.");
+            }
+
+            int ns_kind = reader_namespace_kind(state->reader);
+            if (ns_kind != state->root_namespace_kind) {
+                recovery_batch_fail(state, "MARCXML root namespace changed after recovery planning.");
+            }
+
+            if (state->input_kind == MARCXML_ROOT_COLLECTION) {
+                if (!reader_named(state->reader, "collection")) {
+                    recovery_batch_fail(state, "MARCXML root changed after recovery planning.");
+                }
+                state->root_seen = 1;
+            } else {
+                if (!reader_named(state->reader, "record")) {
+                    recovery_batch_fail(state, "MARCXML root changed after recovery planning.");
+                }
+                state->root_seen = 1;
+                state->source_seen = 1;
+
+                R_xlen_t target = state->source_record_per_valid[state->next_valid];
+                if (target != 1) {
+                    recovery_batch_fail(state, "MARCXML standalone record no longer matches the recovery plan.");
+                }
+
+                xmlNodePtr node = xmlTextReaderExpand(state->reader);
+                R_xlen_t expected_rows = state->rows_per_record[state->next_valid];
+                R_xlen_t actual_rows = 0;
+                if (!node || !count_record_node(node, &actual_rows) || actual_rows != expected_rows) {
+                    recovery_batch_fail(state, "MARCXML record no longer matches the native recovery plan.");
+                }
+
+                R_xlen_t before = output_row;
+                write_record_node(node, 1, cols, &output_row, fields, subs, cap, &state->text);
+                if (output_row - before != expected_rows) {
+                    recovery_batch_fail(state, "Native MARCXML recovery writer produced an unexpected row count.");
+                }
+
+                ++state->next_valid;
+                ++records_written;
+                state->rc = xmlTextReaderNext(state->reader);
+                continue;
+            }
+        } else if (type == XML_READER_TYPE_ELEMENT && depth == 1 &&
+                   state->input_kind == MARCXML_ROOT_COLLECTION) {
+            if (!state->root_seen || !reader_named(state->reader, "record") ||
+                reader_namespace_kind(state->reader) != state->root_namespace_kind) {
+                recovery_batch_fail(state, "MARCXML collection changed after recovery planning.");
+            }
+
+            ++state->source_seen;
+            R_xlen_t target = state->source_record_per_valid[state->next_valid];
+
+            if (state->source_seen < target) {
+                state->rc = xmlTextReaderNext(state->reader);
+                continue;
+            }
+            if (state->source_seen > target) {
+                recovery_batch_fail(state, "MARCXML input no longer matches the native recovery plan.");
+            }
+
+            xmlNodePtr node = xmlTextReaderExpand(state->reader);
+            R_xlen_t expected_rows = state->rows_per_record[state->next_valid];
+            R_xlen_t actual_rows = 0;
+            if (!node || !count_record_node(node, &actual_rows) || actual_rows != expected_rows) {
+                recovery_batch_fail(state, "MARCXML record no longer matches the native recovery plan.");
+            }
+            if (state->source_seen > INT_MAX) {
+                recovery_batch_fail(state, "MARCXML record_id exceeds integer capacity.");
+            }
+
+            R_xlen_t before = output_row;
+            write_record_node(
+                node, (int)state->source_seen, cols, &output_row,
+                fields, subs, cap, &state->text
+            );
+            if (output_row - before != expected_rows) {
+                recovery_batch_fail(state, "Native MARCXML recovery writer produced an unexpected row count.");
+            }
+
+            ++state->next_valid;
+            ++records_written;
+            state->rc = xmlTextReaderNext(state->reader);
+            continue;
+        }
+
+        state->rc = xmlTextReaderRead(state->reader);
+    }
+
+    if (state->rc < 0) {
+        recovery_batch_fail(state, "MARCXML input became unreadable after recovery planning.");
+    }
+    if (records_written != record_limit || output_row != total_rows) {
+        recovery_batch_fail(state, "MARCXML input no longer matches the native recovery plan.");
+    }
+
+    if (state->next_valid == state->records_valid && state->reader) {
+        xmlFreeTextReader(state->reader);
+        state->reader = NULL;
+        state->rc = 0;
+    }
+
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 3));
+    SEXP result_names = PROTECT(Rf_allocVector(STRSXP, 3));
+    SET_STRING_ELT(result_names, 0, Rf_mkChar("columns"));
+    SET_STRING_ELT(result_names, 1, Rf_mkChar("records"));
+    SET_STRING_ELT(result_names, 2, Rf_mkChar("first_record_id"));
+    SET_VECTOR_ELT(result, 0, columns);
+    SET_VECTOR_ELT(result, 1, Rf_ScalarInteger((int)records_written));
+    SET_VECTOR_ELT(result, 2, Rf_ScalarReal((double)first_record));
+    Rf_setAttrib(result, R_NamesSymbol, result_names);
+
+    UNPROTECT(4);
+    return result;
+}
+
+SEXP attribute_visible C_marcxml_recovery_reader_close(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP || R_ExternalPtrTag(ext) != recovery_batch_tag()) {
+        Rf_error("Invalid native MARCXML recovery batch reader.");
+    }
+    recovery_batch_finalizer(ext);
+    return R_NilValue;
+}
+
+
 
 /* -------------------------------------------------------------------------
  * Direct single-record writer
@@ -2581,6 +3593,12 @@ static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_plan_open", (DL_FUNC)&C_marcxml_plan_open, 3},
     {"C_marcxml_plan_info", (DL_FUNC)&C_marcxml_plan_info, 1},
     {"C_marcxml_plan_close", (DL_FUNC)&C_marcxml_plan_close, 1},
+    {"C_marcxml_recovery_plan_open", (DL_FUNC)&C_marcxml_recovery_plan_open, 3},
+    {"C_marcxml_recovery_plan_info", (DL_FUNC)&C_marcxml_recovery_plan_info, 1},
+    {"C_marcxml_recovery_plan_close", (DL_FUNC)&C_marcxml_recovery_plan_close, 1},
+    {"C_marcxml_recovery_reader_open", (DL_FUNC)&C_marcxml_recovery_reader_open, 1},
+    {"C_marcxml_recovery_reader_next", (DL_FUNC)&C_marcxml_recovery_reader_next, 2},
+    {"C_marcxml_recovery_reader_close", (DL_FUNC)&C_marcxml_recovery_reader_close, 1},
     {"C_marcxml_plan_write_record", (DL_FUNC)&C_marcxml_plan_write_record, 3},
     {"C_marcxml_direct_reader_open", (DL_FUNC)&C_marcxml_direct_reader_open, 1},
     {"C_marcxml_direct_reader_next", (DL_FUNC)&C_marcxml_direct_reader_next, 2},

@@ -74,6 +74,131 @@
   invisible(.Call(C_marcxml_plan_close, plan$plan))
 }
 
+
+# Separate direct-native recovery path. The strict planner/reader above is not
+# called with recovery flags and remains unchanged for on_marc_error = "stop".
+.native_marcxml_recovery_plan <- function(
+  file,
+  mode = c("read", "stream"),
+  n_max = Inf
+) {
+  mode <- match.arg(mode)
+
+  if (!isTRUE(getOption("marcxmlr.native", TRUE)) ||
+      !isTRUE(getOption("marcxmlr.direct", TRUE))) {
+    return(list(
+      status = "unavailable",
+      reason = "native_disabled",
+      plan = NULL
+    ))
+  }
+
+  valid_file <- is.character(file) &&
+    length(file) == 1L &&
+    !is.na(file)
+
+  if (!valid_file) {
+    stop("`file` must be one non-missing path.", call. = FALSE)
+  }
+
+  if (!file.exists(file)) {
+    stop(
+      sprintf("MARCXML file does not exist: %s", file),
+      call. = FALSE
+    )
+  }
+
+  if (identical(mode, "read")) {
+    n_max <- .validate_n_max(n_max)
+  } else {
+    n_max <- Inf
+  }
+
+  normalized <- normalizePath(
+    file,
+    winslash = "/",
+    mustWork = TRUE
+  )
+
+  .Call(
+    C_marcxml_recovery_plan_open,
+    normalized,
+    if (identical(mode, "read")) 0L else 1L,
+    as.double(n_max)
+  )
+}
+
+.native_marcxml_recovery_plan_info <- function(plan) {
+  if (!is.list(plan) ||
+      !identical(plan$status, "supported") ||
+      is.null(plan$plan)) {
+    stop(
+      "`plan` must be a supported native MARCXML recovery plan.",
+      call. = FALSE
+    )
+  }
+
+  .Call(C_marcxml_recovery_plan_info, plan$plan)
+}
+
+.native_marcxml_recovery_plan_close <- function(plan) {
+  if (!is.list(plan) ||
+      !identical(plan$status, "supported") ||
+      is.null(plan$plan)) {
+    return(invisible(FALSE))
+  }
+
+  invisible(.Call(C_marcxml_recovery_plan_close, plan$plan))
+}
+
+.native_marcxml_recovery_reader_open <- function(plan) {
+  if (!is.list(plan) ||
+      !identical(plan$status, "supported") ||
+      is.null(plan$plan)) {
+    stop(
+      "`plan` must be a supported native MARCXML recovery plan.",
+      call. = FALSE
+    )
+  }
+
+  .Call(C_marcxml_recovery_reader_open, plan$plan)
+}
+
+.native_marcxml_recovery_reader_next <- function(
+  reader,
+  batch_records = 5000L
+) {
+  batch_records <- .validate_positive_whole_number(
+    batch_records,
+    "batch_records"
+  )
+
+  raw <- .Call(
+    C_marcxml_recovery_reader_next,
+    reader,
+    as.integer(batch_records)
+  )
+
+  if (is.null(raw)) {
+    return(NULL)
+  }
+
+  data <- tibble::new_tibble(
+    raw$columns,
+    nrow = length(raw$columns[[1L]])
+  )
+
+  list(
+    data = data,
+    records = as.integer(raw$records),
+    first_record_id = as.integer(raw$first_record_id)
+  )
+}
+
+.native_marcxml_recovery_reader_close <- function(reader) {
+  invisible(.Call(C_marcxml_recovery_reader_close, reader))
+}
+
 # Development/regression helper: materialize one planned record directly from
 # an xmlTextReader-expanded node. Public readers use the sequential batch API
 # below rather than rescanning for individual records.

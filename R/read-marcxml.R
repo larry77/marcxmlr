@@ -103,6 +103,13 @@
 #' @param chunk_records Number of records assigned to each parsing task. `NULL`
 #'   creates one task in sequential mode and approximately two tasks per worker
 #'   in parallel mode.
+#' @param on_marc_error Action when a well-formed XML record is structurally
+#'   invalid MARCXML. The default, `"stop"`, preserves strict behaviour.
+#'   `"skip"` omits the complete malformed record, writes it to `error_report`
+#'   with the failure reason, and continues. XML syntax errors always remain
+#'   fatal. Recovery mode is currently sequential.
+#' @param error_report Path for the CSV diagnostic report used when
+#'   `on_marc_error = "skip"`. The file must not already exist.
 #'
 #' @return A tibble with columns `record_id`, `field_type`, `tag`,
 #'   `subfield_code`, `value`, `field_order`, `field_occurrence`, `ind1`,
@@ -130,6 +137,16 @@
 #' `xml2`/libxml2 external pointers are never sent to worker processes. The
 #' caller's previous future plan is restored when parsing finishes or fails.
 #'
+#' With `on_marc_error = "skip"`, supported sequential input uses a separate
+#' two-pass native recovery engine. The first libxml2 pass validates the complete
+#' XML document, counts valid records, and records diagnostics for structurally
+#' invalid MARC records. The second native pass materializes only valid records;
+#' rejected records are never parsed one by one in R. Recovery is deliberately
+#' native-only: native-unsupported input fails rather than falling back to slow
+#' record-by-record R recovery. XML syntax errors remain fatal. Skipped records
+#' retain their original source positions, so `record_id`
+#' may contain gaps.
+#'
 #' @examples
 #' example_file <- system.file(
 #'   "extdata", "example-marcxml.xml", package = "marcxmlr"
@@ -149,7 +166,9 @@ read_marcxml <- function(
   file,
   n_max = Inf,
   workers = 1L,
-  chunk_records = NULL
+  chunk_records = NULL,
+  on_marc_error = c("stop", "skip"),
+  error_report = NULL
 ) {
   valid_file <- is.character(file) &&
     length(file) == 1L &&
@@ -169,6 +188,32 @@ read_marcxml <- function(
   n_max <- .validate_n_max(n_max)
   workers <- .validate_workers(workers)
   chunk_records <- .validate_chunk_records(chunk_records)
+  on_marc_error <- match.arg(on_marc_error)
+
+  if (identical(on_marc_error, "skip")) {
+    if (workers != 1L) {
+      stop(
+        "`on_marc_error = \"skip\"` currently requires `workers = 1`.",
+        call. = FALSE
+      )
+    }
+
+    if (!is.null(chunk_records)) {
+      stop(
+        paste0(
+          "`on_marc_error = \"skip\"` currently requires ",
+          "`chunk_records = NULL`."
+        ),
+        call. = FALSE
+      )
+    }
+
+    return(.read_marcxml_recover(
+      file = file,
+      n_max = n_max,
+      error_report = error_report
+    ))
+  }
 
   # Prefer the direct two-pass native engine for sequential reading. The
   # existing serialized-record/R parser remains authoritative when planning

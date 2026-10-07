@@ -243,6 +243,138 @@
   )
 }
 
+
+.native_marcxml_recovery_to_parquet <- function(
+  file,
+  staging_dir,
+  batch_records,
+  compression,
+  verbose,
+  record_id_offset = 0L
+) {
+  if (!isTRUE(getOption("marcxmlr.native", TRUE)) ||
+      !isTRUE(getOption("marcxmlr.native_stream", TRUE)) ||
+      !isTRUE(getOption("marcxmlr.direct", TRUE)) ||
+      !isTRUE(getOption("marcxmlr.direct_parquet", TRUE))) {
+    return(NULL)
+  }
+
+  plan <- .native_marcxml_recovery_plan(
+    file = file,
+    mode = "stream"
+  )
+
+  if (!identical(plan$status, "supported")) {
+    .stop_native_marc_recovery_decline(plan)
+  }
+
+  on.exit(
+    .native_marcxml_recovery_plan_close(plan),
+    add = TRUE
+  )
+
+  info <- .native_marcxml_recovery_plan_info(plan)
+  diagnostics <- .native_marc_recovery_diagnostics(
+    info,
+    source_file = file,
+    record_id_offset = record_id_offset
+  )
+
+  reader <- .native_marcxml_recovery_reader_open(plan)
+  on.exit(
+    .native_marcxml_recovery_reader_close(reader),
+    add = TRUE
+  )
+
+  record_count <- 0L
+  row_count <- 0
+  batch_count <- 0L
+  part_count <- 0L
+
+  repeat {
+    batch <- .native_marcxml_recovery_reader_next(
+      reader,
+      batch_records = batch_records
+    )
+
+    if (is.null(batch)) {
+      break
+    }
+
+    batch_count <- batch_count + 1L
+    part_count <- part_count + 1L
+
+    path <- file.path(
+      staging_dir,
+      sprintf("part-%06d.parquet", part_count)
+    )
+
+    if (record_id_offset > 0L && nrow(batch$data) > 0L) {
+      batch$data$record_id <- batch$data$record_id + record_id_offset
+    }
+
+    arrow::write_parquet(
+      batch$data,
+      sink = path,
+      compression = compression
+    )
+
+    record_count <- record_count + batch$records
+    row_count <- row_count + nrow(batch$data)
+
+    if (verbose) {
+      message(sprintf(
+        paste0(
+          "Wrote %s valid record(s); native recovery identified %s ",
+          "malformed record(s); wrote %s Parquet file(s)."
+        ),
+        format(record_count, big.mark = ",", scientific = FALSE),
+        format(info$skipped_records, big.mark = ",", scientific = FALSE),
+        format(part_count, big.mark = ",", scientific = FALSE)
+      ))
+    }
+
+    rm(batch)
+    invisible(gc(verbose = FALSE))
+  }
+
+  if (record_count != info$records_valid ||
+      row_count != info$rows_valid) {
+    stop(
+      sprintf(
+        paste0(
+          "Native MARCXML recovery Parquet totals disagree with the plan: ",
+          "planned %s valid record(s)/%s row(s), produced %s record(s)/%s row(s)."
+        ),
+        info$records_valid,
+        info$rows_valid,
+        record_count,
+        row_count
+      ),
+      call. = FALSE
+    )
+  }
+
+  if (record_count == 0L) {
+    arrow::write_parquet(
+      .empty_marcxml(),
+      sink = file.path(staging_dir, "part-000001.parquet"),
+      compression = compression
+    )
+    part_count <- 1L
+  }
+
+  list(
+    source_records = as.integer(info$source_records_selected),
+    records = record_count,
+    skipped_records = as.integer(info$skipped_records),
+    rows = row_count,
+    batches = batch_count,
+    parquet_files = part_count,
+    diagnostics = diagnostics
+  )
+}
+
 #' Convert a MARCXML collection to a Parquet dataset
 #'
 #' `marcxml_to_parquet()` streams complete MARCXML records from a collection,
@@ -267,6 +399,13 @@
 #'   [arrow::write_parquet()].
 #' @param verbose Whether to report cumulative records and files after each
 #'   completed batch.
+#' @param on_marc_error Action when a well-formed XML record is structurally
+#'   invalid MARCXML. The default, `"stop"`, preserves strict behaviour.
+#'   `"skip"` omits the complete malformed record, writes it to `error_report`
+#'   with the failure reason, and continues. XML syntax errors always remain
+#'   fatal. Recovery mode currently supports one input file with `workers = 1`.
+#' @param error_report Path for the CSV diagnostic report used when
+#'   `on_marc_error = "skip"`. The file must not already exist.
 #'
 #' @return Invisibly, a tibble with one row per resolved input file containing
 #'   the normalized input and output paths, record and row counts, number of
@@ -306,6 +445,16 @@
 #' only after the XML input has been fully processed. Existing output is never
 #' overwritten.
 #'
+#' With `on_marc_error = "skip"`, supported sequential input uses the native
+#' recovery planner and bounded native batch reader. The complete XML document is
+#' validated during the first libxml2 pass; structurally invalid MARC records are
+#' diagnosed and omitted as complete records, while valid records are written to
+#' Parquet directly from native expanded nodes in the second pass. The package
+#' never repairs a rejected record. The diagnostic CSV is staged and published
+#' only after successful conversion. Skipped records retain their source
+#' positions, so `record_id` may contain gaps. Recovery mode adds
+#' `source_records` and `skipped_records` to the returned one-row summary.
+#'
 #' Open the result with `arrow::open_dataset(output_dir)`. Opening a dataset is
 #' lazy; calling `collect()` on the entire dataset will nevertheless materialize
 #' every row in R memory.
@@ -340,7 +489,9 @@ marcxml_to_parquet <- function(
   workers = 1L,
   chunk_records = NULL,
   compression = "snappy",
-  verbose = TRUE
+  verbose = TRUE,
+  on_marc_error = c("stop", "skip"),
+  error_report = NULL
 ) {
   input_files <- .resolve_marcxml_files(file)
 
@@ -376,6 +527,37 @@ marcxml_to_parquet <- function(
 
   if (!is.logical(verbose) || length(verbose) != 1L || is.na(verbose)) {
     stop("`verbose` must be `TRUE` or `FALSE`.", call. = FALSE)
+  }
+
+  on_marc_error <- match.arg(on_marc_error)
+
+  if (identical(on_marc_error, "skip")) {
+    if (length(input_files) != 1L) {
+      stop(
+        paste0(
+          "`on_marc_error = \"skip\"` currently supports ",
+          "single-file input only."
+        ),
+        call. = FALSE
+      )
+    }
+
+    if (workers != 1L) {
+      stop(
+        "`on_marc_error = \"skip\"` currently requires `workers = 1`.",
+        call. = FALSE
+      )
+    }
+
+    if (!is.null(chunk_records)) {
+      stop(
+        paste0(
+          "`on_marc_error = \"skip\"` currently requires ",
+          "`chunk_records = NULL`."
+        ),
+        call. = FALSE
+      )
+    }
   }
 
   .require_marcxml_stream_packages(workers)
@@ -462,17 +644,108 @@ marcxml_to_parquet <- function(
   }
 
   committed <- FALSE
-  on.exit(
+  staged_error_report <- NULL
+  final_error_report <- NULL
+
+  if (identical(on_marc_error, "skip")) {
+    final_error_report <- .validate_marc_error_report(
+      error_report,
+      input_file,
+      output_dir = output_dir
+    )
+    staged_error_report <- tempfile(
+      pattern = ".marcxmlr-errors-",
+      tmpdir = dirname(final_error_report),
+      fileext = ".csv"
+    )
+  }
+
+  on.exit({
     if (!committed && dir.exists(staging_dir)) {
       unlink(staging_dir, recursive = TRUE, force = TRUE)
-    },
-    add = TRUE
-  )
+    }
+    if (!committed &&
+        !is.null(staged_error_report) &&
+        file.exists(staged_error_report)) {
+      unlink(staged_error_report, force = TRUE)
+    }
+  }, add = TRUE)
+
+  if (identical(on_marc_error, "skip") &&
+      workers == 1L &&
+      is.null(chunk_records)) {
+    recovery_summary <- .native_marcxml_recovery_to_parquet(
+      file = input_file,
+      staging_dir = staging_dir,
+      batch_records = batch_records,
+      compression = compression,
+      verbose = verbose,
+      record_id_offset = record_id_offset
+    )
+
+    if (!is.null(recovery_summary)) {
+      .write_marc_error_report(
+        recovery_summary$diagnostics,
+        staged_error_report
+      )
+
+      if (!file.rename(staging_dir, output_dir)) {
+        stop(
+          sprintf("Could not finalize the dataset directory: %s", output_dir),
+          call. = FALSE
+        )
+      }
+
+      if (!file.rename(staged_error_report, final_error_report)) {
+        unlink(output_dir, recursive = TRUE, force = TRUE)
+        stop(
+          sprintf(
+            "Could not publish MARC error report: %s",
+            final_error_report
+          ),
+          call. = FALSE
+        )
+      }
+
+      committed <- TRUE
+      final_output_dir <- normalizePath(
+        output_dir,
+        winslash = "/",
+        mustWork = TRUE
+      )
+
+      .warn_skipped_marc_records(
+        recovery_summary$skipped_records,
+        final_error_report
+      )
+
+      return(invisible(tibble::tibble(
+        input_file = input_file,
+        output_dir = final_output_dir,
+        source_records = recovery_summary$source_records,
+        records = recovery_summary$records,
+        skipped_records = recovery_summary$skipped_records,
+        rows = recovery_summary$rows,
+        batches = recovery_summary$batches,
+        parquet_files = recovery_summary$parquet_files
+      )))
+    }
+
+    stop(
+      paste0(
+        "`on_marc_error = \"skip\"` requires the native recovery engine; ",
+        "native recovery is disabled for this session."
+      ),
+      call. = FALSE
+    )
+  }
 
   # Prefer the direct bounded engine for the default sequential API. Explicit
   # chunking retains the established task/file partitioning semantics, and
   # parallel calls retain the current worker-safe serialized-record path.
-  if (workers == 1L && is.null(chunk_records)) {
+  if (identical(on_marc_error, "stop") &&
+      workers == 1L &&
+      is.null(chunk_records)) {
     direct_summary <- .native_marcxml_direct_to_parquet(
       file = input_file,
       staging_dir = staging_dir,
@@ -523,6 +796,8 @@ marcxml_to_parquet <- function(
   state$records <- character(batch_records)
   state$batch_size <- 0L
   state$record_count <- 0L
+  state$written_record_count <- 0L
+  state$skipped_record_count <- 0L
   state$row_count <- 0
   state$part_count <- 0L
   state$batch_count <- 0L
@@ -722,7 +997,9 @@ marcxml_to_parquet <- function(
     )
   }
 
-  if (state$record_count == 0L) {
+  output_record_count <- state$record_count
+
+  if (output_record_count == 0L) {
     empty_path <- file.path(staging_dir, "part-000001.parquet")
     arrow::write_parquet(
       .empty_marcxml(),
@@ -739,19 +1016,52 @@ marcxml_to_parquet <- function(
     )
   }
 
+  if (identical(on_marc_error, "skip")) {
+    if (!file.rename(staged_error_report, final_error_report)) {
+      unlink(output_dir, recursive = TRUE, force = TRUE)
+      stop(
+        sprintf(
+          "Could not publish MARC error report: %s",
+          final_error_report
+        ),
+        call. = FALSE
+      )
+    }
+  }
+
   committed <- TRUE
-  summary <- tibble::tibble(
-    input_file = input_file,
-    output_dir = normalizePath(
-      output_dir,
-      winslash = "/",
-      mustWork = TRUE
-    ),
-    records = state$record_count,
-    rows = state$row_count,
-    batches = state$batch_count,
-    parquet_files = state$part_count
+  final_output_dir <- normalizePath(
+    output_dir,
+    winslash = "/",
+    mustWork = TRUE
   )
+
+  if (identical(on_marc_error, "skip")) {
+    .warn_skipped_marc_records(
+      state$skipped_record_count,
+      final_error_report
+    )
+
+    summary <- tibble::tibble(
+      input_file = input_file,
+      output_dir = final_output_dir,
+      source_records = state$record_count,
+      records = state$written_record_count,
+      skipped_records = state$skipped_record_count,
+      rows = state$row_count,
+      batches = state$batch_count,
+      parquet_files = state$part_count
+    )
+  } else {
+    summary <- tibble::tibble(
+      input_file = input_file,
+      output_dir = final_output_dir,
+      records = state$record_count,
+      rows = state$row_count,
+      batches = state$batch_count,
+      parquet_files = state$part_count
+    )
+  }
 
   invisible(summary)
 }

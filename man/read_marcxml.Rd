@@ -4,7 +4,14 @@
 \alias{read_marcxml}
 \title{Read MARCXML into a canonical long tibble}
 \usage{
-read_marcxml(file, n_max = Inf, workers = 1L, chunk_records = NULL)
+read_marcxml(
+  file,
+  n_max = Inf,
+  workers = 1L,
+  chunk_records = NULL,
+  on_marc_error = c("stop", "skip"),
+  error_report = NULL
+)
 }
 \arguments{
 \item{file}{Path to a MARCXML file.}
@@ -20,6 +27,15 @@ R 4.3 or later.}
 \item{chunk_records}{Number of records assigned to each parsing task. \code{NULL}
 creates one task in sequential mode and approximately two tasks per worker
 in parallel mode.}
+
+\item{on_marc_error}{Action when a well-formed XML record is structurally
+invalid MARCXML. The default, \code{"stop"}, preserves strict behaviour.
+\code{"skip"} omits the complete malformed record, writes it to \code{error_report}
+with the failure reason, and continues. XML syntax errors always remain
+fatal. Recovery mode is currently sequential.}
+
+\item{error_report}{Path for the CSV diagnostic report used when
+\code{on_marc_error = "skip"}. The file must not already exist.}
 }
 \value{
 A tibble with columns \code{record_id}, \code{field_type}, \code{tag},
@@ -57,6 +73,16 @@ back to the reference \code{xml2} implementation.
 Parallel parsing retains the established serialized-record implementation.
 \code{xml2}/libxml2 external pointers are never sent to worker processes. The
 caller's previous future plan is restored when parsing finishes or fails.
+
+With \code{on_marc_error = "skip"}, supported sequential input uses a separate
+two-pass native recovery engine. The first libxml2 pass validates the complete
+XML document, counts valid records, and records diagnostics for structurally
+invalid MARC records. The second native pass materializes only valid records;
+rejected records are never parsed one by one in R. Recovery is deliberately
+native-only: native-unsupported input fails rather than falling back to slow
+record-by-record R recovery. XML syntax errors remain fatal. Skipped records
+retain their original source positions, so \code{record_id}
+may contain gaps.
 }
 \examples{
 example_file <- system.file(

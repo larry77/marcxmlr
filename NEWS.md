@@ -1,3 +1,13 @@
+# marcxmlr 0.3.1.9000
+
+* Add optional native malformed-record recovery to `read_marcxml()` and
+  `marcxml_to_parquet()` through `on_marc_error = "skip"`.
+* Skip complete malformed MARC records while preserving source-position
+  `record_id` gaps and writing an audit report with the source record,
+  control number, diagnostic reason, and original record XML.
+* Keep XML syntax and encoding errors fatal. The default strict native parsing
+  path remains unchanged.
+
 # marcxmlr 0.3.1
 
 * Add transparent gzip output support to `write_marcxml()` for filenames

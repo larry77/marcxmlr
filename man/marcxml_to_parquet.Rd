@@ -11,7 +11,9 @@ marcxml_to_parquet(
   workers = 1L,
   chunk_records = NULL,
   compression = "snappy",
-  verbose = TRUE
+  verbose = TRUE,
+  on_marc_error = c("stop", "skip"),
+  error_report = NULL
 )
 }
 \arguments{
@@ -38,6 +40,15 @@ task. \code{NULL} targets approximately two tasks per worker in each batch.}
 
 \item{verbose}{Whether to report cumulative records and files after each
 completed batch.}
+
+\item{on_marc_error}{Action when a well-formed XML record is structurally
+invalid MARCXML. The default, \code{"stop"}, preserves strict behaviour.
+\code{"skip"} omits the complete malformed record, writes it to \code{error_report}
+with the failure reason, and continues. XML syntax errors always remain
+fatal. Recovery mode currently supports one input file with \code{workers = 1}.}
+
+\item{error_report}{Path for the CSV diagnostic report used when
+\code{on_marc_error = "skip"}. The file must not already exist.}
 }
 \value{
 Invisibly, a tibble with one row per resolved input file containing
@@ -83,6 +94,16 @@ successful Parquet write. All files are first written under a staging
 directory beside \code{output_dir}; the completed directory is renamed into place
 only after the XML input has been fully processed. Existing output is never
 overwritten.
+
+With \code{on_marc_error = "skip"}, supported sequential input uses the native
+recovery planner and bounded native batch reader. The complete XML document is
+validated during the first libxml2 pass; structurally invalid MARC records are
+diagnosed and omitted as complete records, while valid records are written to
+Parquet directly from native expanded nodes in the second pass. The package
+never repairs a rejected record. The diagnostic CSV is staged and published
+only after successful conversion. Skipped records retain their source
+positions, so \code{record_id} may contain gaps. Recovery mode adds
+\code{source_records} and \code{skipped_records} to the returned one-row summary.
 
 Open the result with \code{arrow::open_dataset(output_dir)}. Opening a dataset is
 lazy; calling \code{collect()} on the entire dataset will nevertheless materialize
