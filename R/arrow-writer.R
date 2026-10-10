@@ -21,7 +21,7 @@
 .writer_arrow_reader <- function(x) {
   if (!requireNamespace("arrow", quietly = TRUE)) {
     rlang::abort(
-      "Writing a lazy Arrow source requires the optional `arrow` package.",
+      "Working with a lazy Arrow source requires the optional `arrow` package.",
       class = "marcxmlr_missing_dependency"
     )
   }
@@ -90,7 +90,7 @@
     rlang::abort(
       paste0(
         "Lazy Arrow input is not grouped in non-decreasing `record_id` order. ",
-        "Bounded MARCXML writing requires all rows for a record to be contiguous."
+        "Bounded Arrow processing requires all rows for a record to be contiguous."
       ),
       class = "marcxmlr_arrow_order_error"
     )
@@ -101,7 +101,7 @@
     rlang::abort(
       paste0(
         "Lazy Arrow input is not grouped in non-decreasing `record_id` order. ",
-        "Bounded MARCXML writing requires all rows for a record to be contiguous."
+        "Bounded Arrow processing requires all rows for a record to be contiguous."
       ),
       class = "marcxmlr_arrow_order_error"
     )
@@ -121,6 +121,95 @@
   remaining <- limit - nrow(current)
   warnings <- warnings[seq_len(min(nrow(warnings), remaining)), , drop = FALSE]
   rbind(current, warnings)
+}
+
+.writer_arrow_walk_complete <- function(x, consume) {
+  missing_columns <- .writer_arrow_missing_columns(x)
+  if (length(missing_columns) > 0L) {
+    .writer_arrow_abort_missing_columns(missing_columns)
+  }
+
+  reader <- .writer_arrow_reader(x)
+  on.exit(try(reader$Close(), silent = TRUE), add = TRUE)
+
+  carry <- NULL
+  previous_stream_id <- NULL
+
+  emit <- function(rows) {
+    if (nrow(rows) > 0L) {
+      consume(rows)
+    }
+    invisible(NULL)
+  }
+
+  repeat {
+    batch <- reader$read_next_batch()
+    if (is.null(batch)) {
+      break
+    }
+
+    rows <- as.data.frame(batch, stringsAsFactors = FALSE)
+    if (nrow(rows) == 0L) {
+      next
+    }
+
+    missing_batch <- setdiff(.writer_canonical_columns, names(rows))
+    if (length(missing_batch) > 0L) {
+      .writer_arrow_abort_missing_columns(missing_batch)
+    }
+
+    record_id <- .writer_arrow_record_ids(rows)
+    previous_stream_id <- .writer_arrow_check_stream_order(
+      record_id,
+      previous_stream_id
+    )
+
+    if (!is.null(carry)) {
+      carry_id <- as.integer(carry$record_id[[1L]])
+
+      if (record_id[[1L]] == carry_id) {
+        different <- which(record_id != carry_id)
+
+        if (length(different) == 0L) {
+          # A single unusually large record may span several scanner batches.
+          # In that case the complete record is the bounded-memory unit.
+          carry <- rbind(carry, rows)
+          next
+        }
+
+        prefix_n <- different[[1L]] - 1L
+        if (prefix_n > 0L) {
+          carry <- rbind(
+            carry,
+            rows[seq_len(prefix_n), , drop = FALSE]
+          )
+          emit(carry)
+
+          keep <- seq.int(prefix_n + 1L, nrow(rows))
+          rows <- rows[keep, , drop = FALSE]
+          record_id <- record_id[keep]
+        } else {
+          emit(carry)
+        }
+      } else {
+        emit(carry)
+      }
+
+      carry <- NULL
+    }
+
+    last_id <- record_id[[length(record_id)]]
+    trailing <- record_id == last_id
+
+    emit(rows[!trailing, , drop = FALSE])
+    carry <- rows[trailing, , drop = FALSE]
+  }
+
+  if (!is.null(carry) && nrow(carry) > 0L) {
+    emit(carry)
+  }
+
+  invisible(NULL)
 }
 
 .writer_native_stream_open <- function(
@@ -207,16 +296,6 @@
   records_per_file,
   compression_level
 ) {
-  missing_columns <- .writer_arrow_missing_columns(x)
-  if (length(missing_columns) > 0L) {
-    .writer_arrow_abort_missing_columns(missing_columns)
-  }
-
-  reader <- .writer_arrow_reader(x)
-  on.exit(try(reader$Close(), silent = TRUE), add = TRUE)
-
-  carry <- NULL
-  previous_stream_id <- NULL
   records_seen <- 0L
   record_id_will_renumber <- FALSE
   warning_diagnostics <- .writer_empty_diagnostics()
@@ -341,75 +420,7 @@
     invisible(NULL)
   }
 
-  repeat {
-    batch <- reader$read_next_batch()
-    if (is.null(batch)) {
-      break
-    }
-
-    rows <- as.data.frame(batch, stringsAsFactors = FALSE)
-    if (nrow(rows) == 0L) {
-      next
-    }
-
-    missing_batch <- setdiff(.writer_canonical_columns, names(rows))
-    if (length(missing_batch) > 0L) {
-      .writer_arrow_abort_missing_columns(missing_batch)
-    }
-
-    record_id <- .writer_arrow_record_ids(rows)
-    previous_stream_id <- .writer_arrow_check_stream_order(
-      record_id,
-      previous_stream_id
-    )
-
-    if (!is.null(carry)) {
-      carry_id <- as.integer(carry$record_id[[1L]])
-
-      if (record_id[[1L]] == carry_id) {
-        different <- which(record_id != carry_id)
-
-        if (length(different) == 0L) {
-          # One unusually large record spans this entire scanner batch. In
-          # that rare case the record itself is the bounded-memory unit, so
-          # extend only the carry record and wait for the next batch.
-          carry <- rbind(carry, rows)
-          next
-        }
-
-        prefix_n <- different[[1L]] - 1L
-        if (prefix_n > 0L) {
-          carry <- rbind(
-            carry,
-            rows[seq_len(prefix_n), , drop = FALSE]
-          )
-          write_complete(carry)
-
-          keep <- seq.int(prefix_n + 1L, nrow(rows))
-          rows <- rows[keep, , drop = FALSE]
-          record_id <- record_id[keep]
-        } else {
-          write_complete(carry)
-        }
-      } else {
-        write_complete(carry)
-      }
-
-      carry <- NULL
-    }
-
-    last_id <- record_id[[length(record_id)]]
-    trailing <- record_id == last_id
-
-    complete <- rows[!trailing, , drop = FALSE]
-    carry <- rows[trailing, , drop = FALSE]
-    write_complete(complete)
-  }
-
-  if (!is.null(carry) && nrow(carry) > 0L) {
-    write_complete(carry)
-    carry <- NULL
-  }
+  .writer_arrow_walk_complete(x, write_complete)
 
   if (is.null(handle) && length(paths) == 0L) {
     start_shard()

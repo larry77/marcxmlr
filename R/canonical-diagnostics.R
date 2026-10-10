@@ -124,20 +124,191 @@
   .Call(C_marcxml_xml10_invalid, value)
 }
 
+.writer_arrow_order_diagnostic <- function(message) {
+  .writer_diagnostic_issue(
+    "error",
+    "arrow_record_order",
+    message
+  )
+}
+
+.writer_diagnose_arrow <- function(x, include_warnings = TRUE) {
+  missing_columns <- .writer_arrow_missing_columns(x)
+  if (length(missing_columns) > 0L) {
+    return(.writer_diagnostic_issue(
+      "error",
+      "missing_columns",
+      paste0(
+        "Missing required canonical column(s): ",
+        paste(missing_columns, collapse = ", "),
+        "."
+      )
+    ))
+  }
+
+  error_diagnostics <- .writer_empty_diagnostics()
+  warning_diagnostics <- .writer_empty_diagnostics()
+  global_warnings <- list()
+  records_seen <- 0L
+  record_id_will_renumber <- FALSE
+
+  global_warning_codes <- c(
+    "non_applicable_subfield_order",
+    "non_applicable_subfield_occurrence"
+  )
+
+  consume <- function(rows) {
+    ids <- unique(as.integer(rows$record_id))
+    expected <- seq.int(records_seen + 1L, length.out = length(ids))
+    if (!identical(ids, expected)) {
+      record_id_will_renumber <<- TRUE
+    }
+    records_seen <<- records_seen + length(ids)
+
+    diagnostics <- .writer_diagnose_impl(
+      rows,
+      include_warnings = isTRUE(include_warnings)
+    )
+
+    errors <- diagnostics[
+      diagnostics$severity == "error",
+      ,
+      drop = FALSE
+    ]
+    if (nrow(errors) > 0L) {
+      error_diagnostics <<- rbind(error_diagnostics, errors)
+    }
+
+    if (!isTRUE(include_warnings)) {
+      return(invisible(NULL))
+    }
+
+    warnings <- diagnostics[
+      diagnostics$severity == "warning",
+      ,
+      drop = FALSE
+    ]
+    if (nrow(warnings) == 0L) {
+      return(invisible(NULL))
+    }
+
+    # `record_id_will_renumber` is meaningful only for the complete Arrow
+    # stream, not for individual scanner chunks. Track it independently.
+    warnings <- warnings[
+      warnings$code != "record_id_will_renumber",
+      ,
+      drop = FALSE
+    ]
+
+    for (code in global_warning_codes) {
+      idx <- which(warnings$code == code)
+      if (length(idx) > 0L && is.null(global_warnings[[code]])) {
+        global_warnings[[code]] <<- warnings[idx[[1L]], , drop = FALSE]
+      }
+    }
+
+    warnings <- warnings[
+      !warnings$code %in% global_warning_codes,
+      ,
+      drop = FALSE
+    ]
+    if (nrow(warnings) > 0L) {
+      warning_diagnostics <<- rbind(warning_diagnostics, warnings)
+    }
+
+    invisible(NULL)
+  }
+
+  scan_diagnostic <- tryCatch(
+    {
+      .writer_arrow_walk_complete(x, consume)
+      NULL
+    },
+    marcxmlr_canonical_error = function(cnd) {
+      diagnostics <- cnd$diagnostics
+      if (is.null(diagnostics)) {
+        return(.writer_diagnostic_issue(
+          "error",
+          "arrow_scan_error",
+          conditionMessage(cnd)
+        ))
+      }
+      tibble::as_tibble(diagnostics)
+    },
+    marcxmlr_arrow_order_error = function(cnd) {
+      .writer_arrow_order_diagnostic(conditionMessage(cnd))
+    }
+  )
+
+  if (!is.null(scan_diagnostic)) {
+    error_diagnostics <- rbind(error_diagnostics, scan_diagnostic)
+  }
+
+  # As for the in-memory implementation, warning-level coordinate issues are
+  # relevant only when no structural error was found.
+  if (nrow(error_diagnostics) > 0L) {
+    rownames(error_diagnostics) <- NULL
+    return(tibble::as_tibble(error_diagnostics))
+  }
+
+  if (!isTRUE(include_warnings)) {
+    return(.writer_empty_diagnostics())
+  }
+
+  leading_warnings <- list()
+  if (record_id_will_renumber) {
+    leading_warnings[[length(leading_warnings) + 1L]] <-
+      .writer_diagnostic_issue(
+        "warning",
+        "record_id_will_renumber",
+        paste0(
+          "`record_id` values are not contiguous from 1; they will be regenerated ",
+          "when the written XML is reread."
+        )
+      )
+  }
+
+  for (code in global_warning_codes) {
+    if (!is.null(global_warnings[[code]])) {
+      leading_warnings[[length(leading_warnings) + 1L]] <-
+        global_warnings[[code]]
+    }
+  }
+
+  pieces <- c(leading_warnings, list(warning_diagnostics))
+  pieces <- pieces[vapply(pieces, nrow, integer(1)) > 0L]
+  if (length(pieces) == 0L) {
+    return(.writer_empty_diagnostics())
+  }
+
+  out <- do.call(rbind, pieces)
+  rownames(out) <- NULL
+  tibble::as_tibble(out)
+}
+
 
 #' Diagnose a canonical MARC representation
 #'
-#' Check whether an in-memory canonical `marcxmlr` representation contains
-#' enough unambiguous structure to be serialized as MARCXML. Structural
-#' problems are reported as errors. Stale or gapped analytical coordinates
-#' that can be regenerated after writing and rereading are reported as
-#' warnings.
+#' Check whether a canonical `marcxmlr` representation contains enough
+#' unambiguous structure to be serialized as MARCXML. Structural problems are
+#' reported as errors. Stale or gapped analytical coordinates that can be
+#' regenerated after writing and rereading are reported as warnings.
 #'
-#' This function diagnoses the canonical representation used by `marcxmlr`.
+#' In-memory data frames are checked directly. Arrow `Dataset` and lazy Arrow
+#' query inputs are scanned incrementally in bounded batches without collecting
+#' the complete canonical table. A record that crosses a scanner batch boundary
+#' is retained until the complete record is available for diagnosis. Arrow
+#' inputs must therefore present complete record groups in non-decreasing
+#' `record_id` order, matching the bounded-input contract of [write_marcxml()].
+#'
+#' The function diagnoses the canonical representation used by `marcxmlr`.
 #' It is not a complete MARC cataloguing validator and does not repair `x`.
 #'
 #' @param x A data frame or tibble containing the canonical 11-column
-#'   `marcxmlr` representation. Additional columns are ignored.
+#'   `marcxmlr` representation, or an Arrow `Dataset` / lazy
+#'   `arrow_dplyr_query` with the same columns. Additional columns are ignored.
+#'   Arrow inputs require the optional `arrow` package and must be grouped in
+#'   non-decreasing `record_id` order.
 #'
 #' @return A tibble with columns `severity`, `code`, `message`, `record_id`,
 #'   `field_order`, and `subfield_order`. A clean canonical representation
@@ -152,6 +323,10 @@
 #' x <- read_marcxml(example_file)
 #' diagnose_canonical(x)
 diagnose_canonical <- function(x) {
+  if (.writer_is_arrow_source(x)) {
+    return(.writer_diagnose_arrow(x, include_warnings = TRUE))
+  }
+
   .writer_diagnose_impl(x, include_warnings = TRUE)
 }
 

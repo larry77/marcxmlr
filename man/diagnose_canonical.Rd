@@ -8,7 +8,10 @@ diagnose_canonical(x)
 }
 \arguments{
 \item{x}{A data frame or tibble containing the canonical 11-column
-\code{marcxmlr} representation. Additional columns are ignored.}
+\code{marcxmlr} representation, or an Arrow \code{Dataset} / lazy
+\code{arrow_dplyr_query} with the same columns. Additional columns are ignored.
+Arrow inputs require the optional \code{arrow} package and must be grouped in
+non-decreasing \code{record_id} order.}
 }
 \value{
 A tibble with columns \code{severity}, \code{code}, \code{message}, \code{record_id},
@@ -16,14 +19,20 @@ A tibble with columns \code{severity}, \code{code}, \code{message}, \code{record
 returns a zero-row tibble.
 }
 \description{
-Check whether an in-memory canonical \code{marcxmlr} representation contains
-enough unambiguous structure to be serialized as MARCXML. Structural
-problems are reported as errors. Stale or gapped analytical coordinates
-that can be regenerated after writing and rereading are reported as
-warnings.
+Check whether a canonical \code{marcxmlr} representation contains enough
+unambiguous structure to be serialized as MARCXML. Structural problems are
+reported as errors. Stale or gapped analytical coordinates that can be
+regenerated after writing and rereading are reported as warnings.
 }
 \details{
-This function diagnoses the canonical representation used by \code{marcxmlr}.
+In-memory data frames are checked directly. Arrow \code{Dataset} and lazy Arrow
+query inputs are scanned incrementally in bounded batches without collecting
+the complete canonical table. A record that crosses a scanner batch boundary
+is retained until the complete record is available for diagnosis. Arrow inputs
+must therefore present complete record groups in non-decreasing \code{record_id}
+order, matching the bounded-input contract of \code{write_marcxml()}.
+
+The function diagnoses the canonical representation used by \code{marcxmlr}.
 It is not a complete MARC cataloguing validator and does not repair \code{x}.
 }
 \examples{
