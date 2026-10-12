@@ -245,13 +245,21 @@ test_that("parallel conversion can be enabled explicitly", {
   reference <- read_marcxml(example_marcxml_file())
   previous <- future::plan()
 
-  marcxml_to_parquet(
-    example_marcxml_file(),
-    output_dir = output,
-    batch_records = 2L,
-    workers = 2L,
-    chunk_records = 1L,
-    verbose = FALSE
+  withCallingHandlers(
+    marcxml_to_parquet(
+      example_marcxml_file(),
+      output_dir = output,
+      batch_records = 2L,
+      workers = 2L,
+      chunk_records = 1L,
+      verbose = FALSE
+    ),
+    warning = function(w) {
+      expected <- "Parallel processing of a single MARCXML file may not improve performance."
+      if (grepl(expected, conditionMessage(w), fixed = TRUE)) {
+        invokeRestart("muffleWarning")
+      }
+    }
   )
   expect_true(isTRUE(all.equal(future::plan(), previous)))
 

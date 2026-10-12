@@ -230,6 +230,30 @@ The round trip preserves the represented MARC structure and values. It does not
 promise byte-for-byte reproduction of incidental XML serialization details such
 as indentation or namespace-prefix spelling.
 
+## Recover from malformed MARC records
+
+By default, parsing stops when a structurally malformed MARC record is
+encountered. Alternatively, `on_marc_error = "skip"` allows processing to
+continue while skipping complete malformed records:
+
+```{r recovery, eval=FALSE}
+recovered <- read_marcxml(
+  "catalogue-with-malformed-records.xml",
+  on_marc_error = "skip",
+  error_report = "marc-errors.csv"
+)
+```
+
+An error report is required in skip mode. It identifies skipped records,
+explains the problem, and preserves their original XML. The same recovery
+options are available in `marcxml_to_parquet()`.
+
+Skipped records leave gaps in the original `record_id` sequence. Such gaps
+may subsequently be reported as warnings by `diagnose_canonical()`.
+
+Recovery applies only to MARC-level structural problems. XML syntax and
+encoding errors remain fatal.
+
 ## Move the same schema to Parquet
 
 For collections that are inconvenient to materialize as one R object,
@@ -267,6 +291,16 @@ catalogue |>
 
 Opening the dataset is lazy; collecting the complete dataset would still bring
 all rows into R memory.
+
+The same structural diagnostics can run directly on an Arrow dataset:
+
+```{r parquet-diagnostics, eval=requireNamespace("arrow", quietly = TRUE) && requireNamespace("XML", quietly = TRUE)}
+diagnose_canonical(catalogue)
+```
+
+Validation proceeds incrementally without collecting the entire dataset.
+Records must appear in non-decreasing `record_id` order.
+
 
 ## Choosing a workflow
 

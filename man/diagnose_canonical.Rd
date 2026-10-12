@@ -28,9 +28,9 @@ regenerated after writing and rereading are reported as warnings.
 In-memory data frames are checked directly. Arrow \code{Dataset} and lazy Arrow
 query inputs are scanned incrementally in bounded batches without collecting
 the complete canonical table. A record that crosses a scanner batch boundary
-is retained until the complete record is available for diagnosis. Arrow inputs
-must therefore present complete record groups in non-decreasing \code{record_id}
-order, matching the bounded-input contract of \code{write_marcxml()}.
+is retained until the complete record is available for diagnosis. Arrow
+inputs must therefore present complete record groups in non-decreasing
+\code{record_id} order, matching the bounded-input contract of \code{\link[=write_marcxml]{write_marcxml()}}.
 
 The function diagnoses the canonical representation used by \code{marcxmlr}.
 It is not a complete MARC cataloguing validator and does not repair \code{x}.

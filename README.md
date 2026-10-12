@@ -564,6 +564,12 @@ function checks the canonical representation used by `marcxmlr`; it is not a
 complete MARC 21 content validator and does not replace MARCXML schema
 validation.
 
+For Arrow datasets and lazy Arrow queries, `diagnose_canonical()`
+validates the representation incrementally without collecting the entire
+dataset into memory. Records must appear in non-decreasing `record_id`
+order. Gaps in record identifiers may produce warnings without indicating
+structural errors.
+
 `write_marcxml()` performs the required structural checks itself before writing.
 Calling `diagnose_canonical()` explicitly is useful when data have been filtered
 or edited because the result can be inspected before any XML file is created.
@@ -586,6 +592,27 @@ not incidental XML formatting such as indentation or attribute order.
 
 A complete record can likewise be selected and exported with ordinary table
 operations before writing.
+
+## Handling malformed MARC records
+
+By default, `read_marcxml()` stops when it encounters a structurally malformed
+MARC record. Alternatively, `on_marc_error = "skip"` skips the entire malformed
+record and continues processing. An error report is required in this mode:
+
+```r
+marc <- read_marcxml(
+  source_xml,
+  on_marc_error = "skip",
+  error_report = "marc-errors.csv"
+)
+```
+
+The same options are available in `marcxml_to_parquet()`. The report identifies
+skipped records and includes the diagnostic reason and original record XML.
+Source-position gaps in `record_id` are preserved.
+
+Recovery applies only to MARC-level structural errors. XML syntax and encoding
+errors remain fatal; the package does not silently repair malformed XML.
 
 # Large collections and Parquet
 

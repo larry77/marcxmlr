@@ -187,6 +187,32 @@ family.
 These checks enforce the structural contract required by `marcxmlr`; they are
 not complete MARC 21 content validation or complete MARCXML schema validation.
 
+## Native recovery from malformed MARC records
+
+The default parser is strict. With `on_marc_error = "skip"`, the native
+recovery path identifies structurally malformed MARC records, excludes
+complete records rather than individual fields, and produces an audit report.
+Source-position `record_id` values are preserved, including gaps.
+
+The recovery implementation remains native and supports both in-memory
+reading and bounded-memory Parquet conversion. XML syntax and encoding
+errors remain fatal; recovery does not attempt to repair invalid XML.
+
+## Out-of-memory canonical diagnostics
+
+`diagnose_canonical()` accepts ordinary data frames, Arrow `Dataset` objects,
+and lazy Arrow queries. Arrow inputs are scanned incrementally without
+collecting the complete canonical table into R memory.
+
+Records crossing scanner batch boundaries are retained until complete.
+The same structural validation rules apply to in-memory and Arrow inputs.
+Arrow streams must contain complete records in non-decreasing `record_id`
+order.
+
+The function returns the same six-column diagnostics table for both input
+types. Structural ambiguity is reported as an error; renumberable coordinates,
+including gaps in `record_id`, may produce warnings.
+
 ## Parallel execution
 
 Both `read_marcxml()` and `marcxml_to_parquet()` default to sequential
