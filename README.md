@@ -726,7 +726,7 @@ coordinates rather than the authoritative source of serialization order.
 
 Readers who want the lower-level details of the `libxml2` reader/writer,
 two-pass allocation, bounded Arrow scans and retained reference implementations
-can continue with [Technical implementation and performance](TECHNICAL.md).
+can continue with [Technical implementation and performance](https://github.com/larry77/marcxmlr/blob/main/TECHNICAL.md).
 
 ## Parallel execution in practice
 
@@ -768,7 +768,7 @@ conversion took 19.858 s with two workers and 18.849 s with four, compared with
 reduced elapsed time from 290.139 s to 118.629 s.
 
 Detailed benchmark methodology, memory measurements and implementation context
-are provided in [Technical implementation and performance](TECHNICAL.md).
+are provided in [Technical implementation and performance](https://github.com/larry77/marcxmlr/blob/main/TECHNICAL.md).
 
 # Scope and further documentation
 
@@ -792,7 +792,7 @@ For further reading:
   read → inspect/query → diagnose → write → Parquet walkthrough. After installing
   a package build that includes the vignette, it can also be opened with
   `browseVignettes("marcxmlr")`.
-* [Technical implementation and performance](TECHNICAL.md) — optional deeper
+* [Technical implementation and performance](https://github.com/larry77/marcxmlr/blob/main/TECHNICAL.md) — optional deeper
   reading on compiled parsing, bounded-memory processing, Arrow-backed writing,
   parallel execution, validation internals and benchmark methodology.
 
