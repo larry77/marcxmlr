@@ -159,29 +159,70 @@ creates a rectangular representation in which the original relationships remain
 explicit. The analyst can then simplify that representation deliberately when
 the purpose of the analysis is known.
 
+# Design requirements for a general-purpose MARC table
+
+Turning MARCXML into a table is not simply a matter of extracting values. A
+useful representation must preserve the relationships that give MARC 21 records
+their meaning while remaining accessible to people and software that work with
+ordinary tabular data. Four requirements guide the design of `marcxmlr`:
+
+1. **Structural fidelity.** Preserve the represented MARC structure and values,
+   including the Leader, control fields, data-field instances, indicators,
+   repeated fields and subfields, and their order. This is a structural rather
+   than byte-for-byte XML round trip; see [the discussion of structural preservation](#what-semantic-preservation-means).
+2. **General-purpose tabular interoperability.** Use one rectangular table with
+   a fixed set of columns and ordinary scalar values, without list columns,
+   nested objects, specially encoded cells or auxiliary tables. The result can
+   be inspected using familiar tools, from spreadsheets and CSV readers to R,
+   Python, SQL and Parquet systems (subject to each tool's scale limits).
+3. **MARC-native queryability.** Keep tags, indicators and subfield codes
+   directly accessible as columns. Someone familiar with [MARC 21 content
+   designation](https://www.loc.gov/marc/bibliographic/) can locate `245$a` or
+   `856$u` using an ordinary filter on `tag` and `subfield_code`, rather than
+   learning a new way of expressing familiar catalogue questions. See
+   [the MARC query examples](#why-the-representation-is-analyst-friendly).
+4. **Local interpretability.** Each row carries enough context to identify its
+   MARC element and, for a subfield, the field instance to which it belongs.
+   Interpreting one row does not depend on joining another table, unpacking a
+   nested value or inferring its meaning from neighbouring rows.
+
+These are design requirements, not a claim of mathematical optimality. A more
+compact representation might store complete fields in nested cells, distribute
+the hierarchy across related tables or encode field boundaries through row
+sequences. Such designs may be useful for particular purposes, but they make
+ordinary MARC-oriented queries or exchange with generic tabular tools less
+direct. Compactness alone is therefore not a sufficient measure of quality.
+
 # The canonical representation
 
-The central idea of `marcxmlr` is a fixed **canonical representation** of MARC
-content. It is a long rectangular table with exactly 11 columns. The hierarchy
-has not disappeared: it has been translated into explicit coordinates.
+The canonical representation is `marcxmlr`'s practical answer to these
+requirements: a long, fixed-schema table with 11 scalar-valued columns. Each
+Leader and control field occupies one row; each data-field subfield occupies
+one row with its field context and structural coordinates. This makes familiar
+MARC-oriented filtering, grouping and inspection possible with ordinary tabular
+operations. The [11-column specification](#the-11-columns) and the examples
+below make this mapping explicit.
 
-The representation is designed to satisfy two goals at the same time:
+The design accepts **controlled logical redundancy**: field tags, indicators
+and other field-level information repeat across rows belonging to the same
+data field. This is deliberate. It allows each subfield to remain intelligible
+without joins or special decoding, while retaining the relationships needed
+for reconstruction.
 
-1. **structural fidelity** — records, field instances, indicators, repeated
-   fields, repeated subfields and source order remain distinguishable; and
-2. **analytical usability** — the result is an ordinary R table that can be
-   filtered, grouped, joined, reshaped and visualized with familiar tools.
+Logical redundancy does not imply equally inefficient **physical storage**.
+Parquet supports [dictionary and run-length
+encodings](https://parquet.apache.org/docs/file-format/data-pages/encodings/)
+and compression, which can substantially reduce the storage cost of repeated
+column values. A compressed CSV file (for example, CSV with gzip compression)
+can also exploit repeated patterns. Actual file sizes depend on the data and
+the compression settings; no claim is made that this representation is always
+the smallest. See [the Parquet workflow](#large-collections-and-parquet) for out-of-memory storage.
 
-This second point is important. The canonical table is not merely an internal
-serialization format. It is intended to be pleasant to analyse. A librarian who
-knows that the main title is in `245 $a`, for example, can ask for rows where the
-tag is `245` and the subfield code is `a`; there is no need to formulate XPath
-expressions or navigate XML nodes during analysis.
-
-The canonical representation is therefore a **structural analytical layer**, not
-a prescribed final table. One analysis may retain only titles and publishers,
-another may study repeated subject headings, and another may select or edit
-complete records before serializing them back to MARCXML.
+The canonical model is neither the only possible lossless tabular mapping nor
+claimed to be universally optimal. It is a deliberate compromise: alternatives
+that eliminate redundancy tend to introduce other costs in interpretability,
+interoperability or MARC-native querying. Improving substantially on this
+combination of properties is not straightforward.
 
 ## What one canonical row represents
 
