@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<meta name="author" content="Lorenzo Isella" />
+
+
+<title>Statistical profiling of bibliographic metadata with marcxmlr</title>
+
+<script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
+// be compatible with the behavior of Pandoc < 2.8).
+document.addEventListener('DOMContentLoaded', function(e) {
+  var hs = document.querySelectorAll("div.section[class*='level'] > :first-child");
+  var i, h, a;
+  for (i = 0; i < hs.length; i++) {
+    h = hs[i];
+    if (!/^h[1-6]$/i.test(h.tagName)) continue;  // it should be a header h1-h6
+    a = h.attributes;
+    while (a.length > 0) h.removeAttribute(a[0].name);
+  }
+});
+</script>
+
+<style type="text/css">
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+span.underline{text-decoration: underline;}
+div.column{display: inline-block; vertical-align: top; width: 50%;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+</style>
+
+
+
+<style type="text/css">
+code {
+white-space: pre;
+}
+.sourceCode {
+overflow: visible;
+}
+</style>
+<style type="text/css" data-origin="pandoc">
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+<script>
+// apply pandoc div.sourceCode style to pre.sourceCode instead
+(function() {
+  var sheets = document.styleSheets;
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].ownerNode.dataset["origin"] !== "pandoc") continue;
+    try { var rules = sheets[i].cssRules; } catch (e) { continue; }
+    var j = 0;
+    while (j < rules.length) {
+      var rule = rules[j];
+      // check if there is a div.sourceCode rule
+      if (rule.type !== rule.STYLE_RULE || rule.selectorText !== "div.sourceCode") {
+        j++;
+        continue;
+      }
+      var style = rule.style.cssText;
+      // check if color or background-color is set
+      if (rule.style.color === '' && rule.style.backgroundColor === '') {
+        j++;
+        continue;
+      }
+      // replace div.sourceCode by a pre.sourceCode rule
+      sheets[i].deleteRule(j);
+      sheets[i].insertRule('pre.sourceCode{' + style + '}', j);
+    }
+  }
+})();
+</script>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+#TOC {
+clear: both;
+margin: 0 0 10px 10px;
+padding: 4px;
+width: 400px;
+border: 1px solid #CCCCCC;
+border-radius: 5px;
+background-color: #f6f6f6;
+font-size: 13px;
+line-height: 1.3;
+}
+#TOC .toctitle {
+font-weight: bold;
+font-size: 15px;
+margin-left: 5px;
+}
+#TOC ul {
+padding-left: 40px;
+margin-left: -1.5em;
+margin-top: 5px;
+margin-bottom: 5px;
+}
+#TOC ul ul {
+margin-left: -2em;
+}
+#TOC li {
+line-height: 16px;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+
+code > span.kw { color: #555; font-weight: bold; } 
+code > span.dt { color: #902000; } 
+code > span.dv { color: #40a070; } 
+code > span.bn { color: #d14; } 
+code > span.fl { color: #d14; } 
+code > span.ch { color: #d14; } 
+code > span.st { color: #d14; } 
+code > span.co { color: #888888; font-style: italic; } 
+code > span.ot { color: #007020; } 
+code > span.al { color: #ff0000; font-weight: bold; } 
+code > span.fu { color: #900; font-weight: bold; } 
+code > span.er { color: #a61717; background-color: #e3d2d2; } 
+</style>
+
+
+
+
+</head>
+
+<body>
+
+
+
+
+<h1 class="title toc-ignore">Statistical profiling of bibliographic
+metadata with marcxmlr</h1>
+<h4 class="author">Lorenzo Isella</h4>
+
+
+
+<div id="a-catalogue-as-a-statistical-population" class="section level2">
+<h2>A catalogue as a statistical population</h2>
+<p>A bibliographic catalogue can be studied statistically: which kinds
+of subject access are present, how many subject headings are assigned to
+individual records, and how often do those headings carry
+machine-readable authority identifiers? These are descriptive questions
+about <em>records</em> and <em>field instances</em>, not questions about
+XML parsing. They also have practical uses in catalogue assessment and
+in identifying records for closer examination.</p>
+<p>This vignette develops a small case study using genuine MARCXML data.
+It focuses on a finding that merits investigation: <strong>the
+occurrence of an authority identifier in topical subject fields varies
+strongly with the number of subject subdivisions</strong>. We do not
+treat the absence of an identifier as proof of a cataloguing error. The
+package <a href="https://github.com/larry77/marcxmlr">README</a>
+introduces MARCXML, the canonical representation, editing and
+reconstruction; those examples are deliberately not repeated here.</p>
+<div id="dataset-and-limits-of-inference" class="section level3">
+<h3>Dataset and limits of inference</h3>
+<p>The analysis uses <strong>1,000 genuine bibliographic
+records</strong> sampled from the GPO collection and included with the
+package as a fixed MARCXML file. The source is the U.S. Government
+Publishing Office’s (GPO) <em>Catalog of U.S. Government
+Publications</em>. The frozen source corpus and reproducibility material
+associated with the package evaluation are documented on <a href="https://doi.org/10.5281/zenodo.23160503">Zenodo</a>.</p>
+<p>The sample represents only <strong>part 00</strong>, not the complete
+GPO catalogue. Its records predominantly describe publications from the
+1970s. Statistics below refer to the <strong>sample as observed</strong>
+and are not estimates of the whole GPO catalogue or of changes through
+time. This example file is included in the package so the vignette can
+render without a network connection. The XML data are real; any
+interpretation of their metadata remains conditional on cataloguing
+practice and context.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">library</span>(marcxmlr)</span>
+<span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a><span class="fu">library</span>(dplyr)</span>
+<span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a></span>
+<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a>xml_file <span class="ot">&lt;-</span> <span class="fu">system.file</span>(</span>
+<span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a>  <span class="st">&quot;extdata&quot;</span>, <span class="st">&quot;gpo-cgp-part00-sample.xml&quot;</span>,</span>
+<span id="cb1-6"><a href="#cb1-6" tabindex="-1"></a>  <span class="at">package =</span> <span class="st">&quot;marcxmlr&quot;</span>, <span class="at">mustWork =</span> <span class="cn">TRUE</span></span>
+<span id="cb1-7"><a href="#cb1-7" tabindex="-1"></a>)</span>
+<span id="cb1-8"><a href="#cb1-8" tabindex="-1"></a>marc <span class="ot">&lt;-</span> <span class="fu">read_marcxml</span>(xml_file)</span>
+<span id="cb1-9"><a href="#cb1-9" tabindex="-1"></a></span>
+<span id="cb1-10"><a href="#cb1-10" tabindex="-1"></a>n_records <span class="ot">&lt;-</span> <span class="fu">n_distinct</span>(marc<span class="sc">$</span>record_id)</span>
+<span id="cb1-11"><a href="#cb1-11" tabindex="-1"></a>field_instances <span class="ot">&lt;-</span> marc <span class="sc">|&gt;</span></span>
+<span id="cb1-12"><a href="#cb1-12" tabindex="-1"></a>  <span class="fu">filter</span>(field_type <span class="sc">==</span> <span class="st">&quot;datafield&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb1-13"><a href="#cb1-13" tabindex="-1"></a>  <span class="fu">distinct</span>(record_id, field_order, tag)</span>
+<span id="cb1-14"><a href="#cb1-14" tabindex="-1"></a></span>
+<span id="cb1-15"><a href="#cb1-15" tabindex="-1"></a>overview <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(</span>
+<span id="cb1-16"><a href="#cb1-16" tabindex="-1"></a>  <span class="at">Measure =</span> <span class="fu">c</span>(<span class="st">&quot;Bibliographic records&quot;</span>, <span class="st">&quot;Canonical rows&quot;</span>, <span class="st">&quot;Data-field instances&quot;</span>),</span>
+<span id="cb1-17"><a href="#cb1-17" tabindex="-1"></a>  <span class="at">Value =</span> <span class="fu">c</span>(n_records, <span class="fu">nrow</span>(marc), <span class="fu">nrow</span>(field_instances))</span>
+<span id="cb1-18"><a href="#cb1-18" tabindex="-1"></a>)</span>
+<span id="cb1-19"><a href="#cb1-19" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(overview, <span class="at">format.args =</span> <span class="fu">list</span>(<span class="at">big.mark =</span> <span class="st">&quot;,&quot;</span>))</span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Measure</th>
+<th align="right">Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Bibliographic records</td>
+<td align="right">1,000</td>
+</tr>
+<tr class="even">
+<td align="left">Canonical rows</td>
+<td align="right">53,808</td>
+</tr>
+<tr class="odd">
+<td align="left">Data-field instances</td>
+<td align="right">24,734</td>
+</tr>
+</tbody>
+</table>
+<p>The canonical format stores one row per subfield occurrence in a MARC
+data field. Thus a field containing <code>$a</code>, <code>$x</code> and
+<code>$0</code> contributes three rows but only <strong>one field
+instance</strong>, identified by <code>(record_id, field_order)</code>.
+Likewise, a record containing three <code>650</code> fields is
+<strong>one record</strong> but three subject-field instances. We will
+make each denominator explicit.</p>
+</div>
+</div>
+<div id="coverage-how-often-does-a-record-have-topical-subject-access" class="section level2">
+<h2>1. Coverage: how often does a record have topical subject
+access?</h2>
+<p>Our first unit is the <em>bibliographic record</em>. We measure the
+presence of selected MARC fields without treating any of them as
+mandatory for every record. For example, <code>650</code> means a
+topical subject added entry; other MARC fields can also represent
+subject access.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a>tags_of_interest <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a>  <span class="at">tag =</span> <span class="fu">c</span>(<span class="st">&quot;245&quot;</span>, <span class="st">&quot;650&quot;</span>, <span class="st">&quot;651&quot;</span>, <span class="st">&quot;655&quot;</span>, <span class="st">&quot;710&quot;</span>, <span class="st">&quot;856&quot;</span>),</span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>  <span class="at">meaning =</span> <span class="fu">c</span>(</span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a>    <span class="st">&quot;Title statement&quot;</span>, <span class="st">&quot;Topical subject&quot;</span>, <span class="st">&quot;Geographic subject&quot;</span>,</span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a>    <span class="st">&quot;Genre/form term&quot;</span>, <span class="st">&quot;Corporate added entry&quot;</span>, <span class="st">&quot;Electronic location/access&quot;</span></span>
+<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a>  )</span>
+<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a>)</span>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a></span>
+<span id="cb2-9"><a href="#cb2-9" tabindex="-1"></a>coverage <span class="ot">&lt;-</span> field_instances <span class="sc">|&gt;</span></span>
+<span id="cb2-10"><a href="#cb2-10" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">%in%</span> tags_of_interest<span class="sc">$</span>tag) <span class="sc">|&gt;</span></span>
+<span id="cb2-11"><a href="#cb2-11" tabindex="-1"></a>  <span class="fu">distinct</span>(record_id, tag) <span class="sc">|&gt;</span></span>
+<span id="cb2-12"><a href="#cb2-12" tabindex="-1"></a>  <span class="fu">count</span>(tag, <span class="at">name =</span> <span class="st">&quot;records&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb2-13"><a href="#cb2-13" tabindex="-1"></a>  <span class="fu">right_join</span>(tags_of_interest, <span class="at">by =</span> <span class="st">&quot;tag&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb2-14"><a href="#cb2-14" tabindex="-1"></a>  <span class="fu">mutate</span>(</span>
+<span id="cb2-15"><a href="#cb2-15" tabindex="-1"></a>    <span class="at">records =</span> <span class="fu">coalesce</span>(records, <span class="dv">0</span><span class="dt">L</span>),</span>
+<span id="cb2-16"><a href="#cb2-16" tabindex="-1"></a>    <span class="at">percent =</span> <span class="dv">100</span> <span class="sc">*</span> records <span class="sc">/</span> n_records</span>
+<span id="cb2-17"><a href="#cb2-17" tabindex="-1"></a>  ) <span class="sc">|&gt;</span></span>
+<span id="cb2-18"><a href="#cb2-18" tabindex="-1"></a>  <span class="fu">select</span>(tag, meaning, records, percent)</span>
+<span id="cb2-19"><a href="#cb2-19" tabindex="-1"></a></span>
+<span id="cb2-20"><a href="#cb2-20" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(</span>
+<span id="cb2-21"><a href="#cb2-21" tabindex="-1"></a>  coverage, <span class="at">digits =</span> <span class="dv">1</span>,</span>
+<span id="cb2-22"><a href="#cb2-22" tabindex="-1"></a>  <span class="at">caption =</span> <span class="st">&quot;Record-level field coverage (denominator: all 1,000 records).&quot;</span></span>
+<span id="cb2-23"><a href="#cb2-23" tabindex="-1"></a>)</span></code></pre></div>
+<table>
+<caption>Record-level field coverage (denominator: all 1,000
+records).</caption>
+<thead>
+<tr class="header">
+<th align="left">tag</th>
+<th align="left">meaning</th>
+<th align="right">records</th>
+<th align="right">percent</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">245</td>
+<td align="left">Title statement</td>
+<td align="right">1000</td>
+<td align="right">100.0</td>
+</tr>
+<tr class="even">
+<td align="left">650</td>
+<td align="left">Topical subject</td>
+<td align="right">865</td>
+<td align="right">86.5</td>
+</tr>
+<tr class="odd">
+<td align="left">651</td>
+<td align="left">Geographic subject</td>
+<td align="right">123</td>
+<td align="right">12.3</td>
+</tr>
+<tr class="even">
+<td align="left">655</td>
+<td align="left">Genre/form term</td>
+<td align="right">117</td>
+<td align="right">11.7</td>
+</tr>
+<tr class="odd">
+<td align="left">710</td>
+<td align="left">Corporate added entry</td>
+<td align="right">451</td>
+<td align="right">45.1</td>
+</tr>
+<tr class="even">
+<td align="left">856</td>
+<td align="left">Electronic location/access</td>
+<td align="right">4</td>
+<td align="right">0.4</td>
+</tr>
+</tbody>
+</table>
+<p>The observed sample has 1,000 records with a <code>245</code> title
+field and <strong>865 with at least one <code>650</code> field</strong>.
+Only four have an <code>856</code> electronic-access field. The latter
+is not automatically a deficiency: the sample mainly concerns historical
+printed government publications. The coverage table measures
+<em>presence</em>, not adequacy or correctness.</p>
+</div>
+<div id="indexing-intensity-how-many-topical-subject-fields-per-record" class="section level2">
+<h2>2. Indexing intensity: how many topical subject fields per
+record?</h2>
+<p>Next we count <em>field instances</em> within each <em>record</em>.
+Critically, the calculation begins with <strong>all records</strong>,
+including those with no <code>650</code>: a summary calculated only from
+<code>650</code> rows would omit zero-subject records and inflate the
+average.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>subject_counts <span class="ot">&lt;-</span> field_instances <span class="sc">|&gt;</span></span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a>  <span class="fu">count</span>(record_id, <span class="at">name =</span> <span class="st">&quot;n_650&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a>  <span class="fu">right_join</span>(</span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a>    <span class="fu">data.frame</span>(<span class="at">record_id =</span> <span class="fu">unique</span>(marc<span class="sc">$</span>record_id)),</span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a>    <span class="at">by =</span> <span class="st">&quot;record_id&quot;</span></span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a>  ) <span class="sc">|&gt;</span></span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">n_650 =</span> <span class="fu">coalesce</span>(n_650, <span class="dv">0</span><span class="dt">L</span>)) <span class="sc">|&gt;</span></span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a>  <span class="fu">arrange</span>(record_id)</span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a></span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a>subject_summary <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(</span>
+<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a>  <span class="at">Measure =</span> <span class="fu">c</span>(</span>
+<span id="cb3-13"><a href="#cb3-13" tabindex="-1"></a>    <span class="st">&quot;Records with no 650&quot;</span>, <span class="st">&quot;Mean fields per record&quot;</span>,</span>
+<span id="cb3-14"><a href="#cb3-14" tabindex="-1"></a>    <span class="st">&quot;Median fields per record&quot;</span>, <span class="st">&quot;90th percentile&quot;</span>, <span class="st">&quot;Maximum&quot;</span></span>
+<span id="cb3-15"><a href="#cb3-15" tabindex="-1"></a>  ),</span>
+<span id="cb3-16"><a href="#cb3-16" tabindex="-1"></a>  <span class="at">Value =</span> <span class="fu">c</span>(</span>
+<span id="cb3-17"><a href="#cb3-17" tabindex="-1"></a>    <span class="fu">sum</span>(subject_counts<span class="sc">$</span>n_650 <span class="sc">==</span> <span class="dv">0</span><span class="dt">L</span>), <span class="fu">mean</span>(subject_counts<span class="sc">$</span>n_650),</span>
+<span id="cb3-18"><a href="#cb3-18" tabindex="-1"></a>    <span class="fu">median</span>(subject_counts<span class="sc">$</span>n_650),</span>
+<span id="cb3-19"><a href="#cb3-19" tabindex="-1"></a>    <span class="fu">as.numeric</span>(<span class="fu">quantile</span>(subject_counts<span class="sc">$</span>n_650, <span class="fl">0.90</span>)),</span>
+<span id="cb3-20"><a href="#cb3-20" tabindex="-1"></a>    <span class="fu">max</span>(subject_counts<span class="sc">$</span>n_650)</span>
+<span id="cb3-21"><a href="#cb3-21" tabindex="-1"></a>  )</span>
+<span id="cb3-22"><a href="#cb3-22" tabindex="-1"></a>)</span>
+<span id="cb3-23"><a href="#cb3-23" tabindex="-1"></a>subject_summary<span class="sc">$</span>Value <span class="ot">&lt;-</span> <span class="fu">c</span>(</span>
+<span id="cb3-24"><a href="#cb3-24" tabindex="-1"></a>  <span class="fu">sprintf</span>(<span class="st">&quot;%.0f&quot;</span>, subject_summary<span class="sc">$</span>Value[<span class="dv">1</span>]),</span>
+<span id="cb3-25"><a href="#cb3-25" tabindex="-1"></a>  <span class="fu">sprintf</span>(<span class="st">&quot;%.2f&quot;</span>, subject_summary<span class="sc">$</span>Value[<span class="dv">2</span>]),</span>
+<span id="cb3-26"><a href="#cb3-26" tabindex="-1"></a>  <span class="fu">sprintf</span>(<span class="st">&quot;%.0f&quot;</span>, subject_summary<span class="sc">$</span>Value[<span class="dv">3</span><span class="sc">:</span><span class="dv">5</span>])</span>
+<span id="cb3-27"><a href="#cb3-27" tabindex="-1"></a>)</span>
+<span id="cb3-28"><a href="#cb3-28" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(subject_summary)</span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Measure</th>
+<th align="left">Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Records with no 650</td>
+<td align="left">135</td>
+</tr>
+<tr class="even">
+<td align="left">Mean fields per record</td>
+<td align="left">1.77</td>
+</tr>
+<tr class="odd">
+<td align="left">Median fields per record</td>
+<td align="left">2</td>
+</tr>
+<tr class="even">
+<td align="left">90th percentile</td>
+<td align="left">3</td>
+</tr>
+<tr class="odd">
+<td align="left">Maximum</td>
+<td align="left">14</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>subjects_binned <span class="ot">&lt;-</span> <span class="fu">factor</span>(</span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a>  <span class="fu">pmin</span>(subject_counts<span class="sc">$</span>n_650, <span class="dv">5</span><span class="dt">L</span>),</span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>  <span class="at">levels =</span> <span class="dv">0</span><span class="sc">:</span><span class="dv">5</span>,</span>
+<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a>  <span class="at">labels =</span> <span class="fu">c</span>(<span class="st">&quot;0&quot;</span>, <span class="st">&quot;1&quot;</span>, <span class="st">&quot;2&quot;</span>, <span class="st">&quot;3&quot;</span>, <span class="st">&quot;4&quot;</span>, <span class="st">&quot;5+&quot;</span>)</span>
+<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a>)</span>
+<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="fu">barplot</span>(</span>
+<span id="cb4-7"><a href="#cb4-7" tabindex="-1"></a>  <span class="fu">table</span>(subjects_binned),</span>
+<span id="cb4-8"><a href="#cb4-8" tabindex="-1"></a>  <span class="at">xlab =</span> <span class="st">&quot;Number of 650 fields in a record&quot;</span>,</span>
+<span id="cb4-9"><a href="#cb4-9" tabindex="-1"></a>  <span class="at">ylab =</span> <span class="st">&quot;Number of records&quot;</span>,</span>
+<span id="cb4-10"><a href="#cb4-10" tabindex="-1"></a>  <span class="at">col =</span> <span class="st">&quot;grey70&quot;</span>, <span class="at">border =</span> <span class="st">&quot;grey35&quot;</span></span>
+<span id="cb4-11"><a href="#cb4-11" tabindex="-1"></a>)</span></code></pre></div>
+<div class="float">
+<img src="data:image/png;base64,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" alt="Topical subject fields per record. The last category combines records with five or more 650 fields." />
+<div class="figcaption">Topical subject fields per record. The last
+category combines records with five or more 650 fields.</div>
+</div>
+<p>The distribution is not captured by a single average: <strong>135
+records have no <code>650</code></strong>, the median is two fields per
+record, and the maximum is 14. Those figures are useful as descriptions
+of indexing intensity; they are not thresholds for correct
+cataloguing.</p>
+</div>
+<div id="authority-identifiers-use-field-instances-not-subfield-rows" class="section level2">
+<h2>3. Authority identifiers: use field instances, not subfield
+rows</h2>
+<p>Our second question concerns subfield <code>$0</code>, which may
+carry an authority record control number or standard number. The
+appropriate denominator is the number of <strong>field instances of each
+MARC tag</strong>, not the total number of canonical rows, subfields or
+bibliographic records.</p>
+<p>We calculate a Boolean indicator once per field. Grouping by
+<code>record_id</code> and <code>field_order</code> is essential: a
+<code>$0</code> in one <code>650</code> field must not be attributed to
+another <code>650</code> field in the same record.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>field_profiles <span class="ot">&lt;-</span> marc <span class="sc">|&gt;</span></span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>  <span class="fu">filter</span>(field_type <span class="sc">==</span> <span class="st">&quot;datafield&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>  <span class="fu">group_by</span>(record_id, field_order, tag, ind2) <span class="sc">|&gt;</span></span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a>  <span class="fu">summarise</span>(</span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>    <span class="at">has_0 =</span> <span class="fu">any</span>(</span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a>      subfield_code <span class="sc">==</span> <span class="st">&quot;0&quot;</span> <span class="sc">&amp;</span> <span class="sc">!</span><span class="fu">is.na</span>(value) <span class="sc">&amp;</span> <span class="fu">nzchar</span>(<span class="fu">trimws</span>(value)),</span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a>      <span class="at">na.rm =</span> <span class="cn">TRUE</span></span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a>    ),</span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a>    <span class="at">n_subdivisions =</span> <span class="fu">sum</span>(subfield_code <span class="sc">%in%</span> <span class="fu">c</span>(<span class="st">&quot;v&quot;</span>, <span class="st">&quot;x&quot;</span>, <span class="st">&quot;y&quot;</span>, <span class="st">&quot;z&quot;</span>)),</span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a>    <span class="at">.groups =</span> <span class="st">&quot;drop&quot;</span></span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a>  )</span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a></span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a>selected_tags <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">&quot;100&quot;</span>, <span class="st">&quot;110&quot;</span>, <span class="st">&quot;650&quot;</span>, <span class="st">&quot;651&quot;</span>, <span class="st">&quot;655&quot;</span>, <span class="st">&quot;710&quot;</span>)</span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a>authority_by_tag <span class="ot">&lt;-</span> field_profiles <span class="sc">|&gt;</span></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">%in%</span> selected_tags) <span class="sc">|&gt;</span></span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a>  <span class="fu">group_by</span>(tag) <span class="sc">|&gt;</span></span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a>  <span class="fu">summarise</span>(</span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a>    <span class="at">field_instances =</span> <span class="fu">n</span>(),</span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a>    <span class="at">with_0 =</span> <span class="fu">sum</span>(has_0),</span>
+<span id="cb5-20"><a href="#cb5-20" tabindex="-1"></a>    <span class="at">percent_with_0 =</span> <span class="dv">100</span> <span class="sc">*</span> <span class="fu">mean</span>(has_0),</span>
+<span id="cb5-21"><a href="#cb5-21" tabindex="-1"></a>    <span class="at">.groups =</span> <span class="st">&quot;drop&quot;</span></span>
+<span id="cb5-22"><a href="#cb5-22" tabindex="-1"></a>  ) <span class="sc">|&gt;</span></span>
+<span id="cb5-23"><a href="#cb5-23" tabindex="-1"></a>  <span class="fu">arrange</span>(tag)</span>
+<span id="cb5-24"><a href="#cb5-24" tabindex="-1"></a></span>
+<span id="cb5-25"><a href="#cb5-25" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(</span>
+<span id="cb5-26"><a href="#cb5-26" tabindex="-1"></a>  authority_by_tag, <span class="at">digits =</span> <span class="dv">1</span>,</span>
+<span id="cb5-27"><a href="#cb5-27" tabindex="-1"></a>  <span class="at">caption =</span> <span class="st">&quot;Presence of nonempty $0 by MARC field tag (field-instance denominator).&quot;</span></span>
+<span id="cb5-28"><a href="#cb5-28" tabindex="-1"></a>)</span></code></pre></div>
+<table>
+<caption>Presence of nonempty $0 by MARC field tag (field-instance
+denominator).</caption>
+<thead>
+<tr class="header">
+<th align="left">tag</th>
+<th align="right">field_instances</th>
+<th align="right">with_0</th>
+<th align="right">percent_with_0</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">100</td>
+<td align="right">247</td>
+<td align="right">173</td>
+<td align="right">70.0</td>
+</tr>
+<tr class="even">
+<td align="left">110</td>
+<td align="right">668</td>
+<td align="right">624</td>
+<td align="right">93.4</td>
+</tr>
+<tr class="odd">
+<td align="left">650</td>
+<td align="right">1771</td>
+<td align="right">761</td>
+<td align="right">43.0</td>
+</tr>
+<tr class="even">
+<td align="left">651</td>
+<td align="right">158</td>
+<td align="right">116</td>
+<td align="right">73.4</td>
+</tr>
+<tr class="odd">
+<td align="left">655</td>
+<td align="right">223</td>
+<td align="right">222</td>
+<td align="right">99.6</td>
+</tr>
+<tr class="even">
+<td align="left">710</td>
+<td align="right">629</td>
+<td align="right">590</td>
+<td align="right">93.8</td>
+</tr>
+</tbody>
+</table>
+<p>The sample has nonempty <code>$0</code> values in <strong>761 of
+1,771 topical <code>650</code> fields (43.0%)</strong>, compared with
+<strong>590 of 629 <code>710</code> corporate added-entry fields
+(93.8%)</strong> and <strong>222 of 223 <code>655</code> genre/form
+fields (99.6%)</strong>. These are heterogeneous metadata categories
+with different functions and cataloguing conventions, so their
+percentages should not be interpreted as a ranking of cataloguing
+quality. Moreover, subfield <code>$0</code> <em>presence</em> does not
+prove that an identifier resolves or refers to the correct entity.</p>
+</div>
+<div id="a-more-revealing-association-subject-subdivisions-and-0" class="section level2">
+<h2>4. A more revealing association: subject subdivisions and
+<code>$0</code></h2>
+<p>A topical <code>650</code> heading can be subdivided by form
+(<code>$v</code>), topic (<code>$x</code>), period (<code>$y</code>) or
+place (<code>$z</code>). Are authority identifiers distributed similarly
+among simple and subdivided topical headings?</p>
+<p>Each row in <code>topical_fields</code> below represents <strong>one
+complete <code>650</code> field</strong>; <code>n_subdivisions</code>
+counts occurrences of <code>$v</code>, <code>$x</code>, <code>$y</code>
+and <code>$z</code> in that field. This is not a count of words or of
+distinct subdivision <em>types</em>.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>topical_fields <span class="ot">&lt;-</span> field_profiles <span class="sc">|&gt;</span></span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a>  <span class="fu">mutate</span>(</span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a>    <span class="at">subdivision_group =</span> <span class="fu">factor</span>(</span>
+<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a>      <span class="fu">case_when</span>(</span>
+<span id="cb6-6"><a href="#cb6-6" tabindex="-1"></a>        n_subdivisions <span class="sc">==</span> <span class="dv">0</span><span class="dt">L</span> <span class="sc">~</span> <span class="st">&quot;None&quot;</span>,</span>
+<span id="cb6-7"><a href="#cb6-7" tabindex="-1"></a>        n_subdivisions <span class="sc">==</span> <span class="dv">1</span><span class="dt">L</span> <span class="sc">~</span> <span class="st">&quot;One&quot;</span>,</span>
+<span id="cb6-8"><a href="#cb6-8" tabindex="-1"></a>        <span class="cn">TRUE</span> <span class="sc">~</span> <span class="st">&quot;Two or more&quot;</span></span>
+<span id="cb6-9"><a href="#cb6-9" tabindex="-1"></a>      ),</span>
+<span id="cb6-10"><a href="#cb6-10" tabindex="-1"></a>      <span class="at">levels =</span> <span class="fu">c</span>(<span class="st">&quot;None&quot;</span>, <span class="st">&quot;One&quot;</span>, <span class="st">&quot;Two or more&quot;</span>)</span>
+<span id="cb6-11"><a href="#cb6-11" tabindex="-1"></a>    )</span>
+<span id="cb6-12"><a href="#cb6-12" tabindex="-1"></a>  )</span>
+<span id="cb6-13"><a href="#cb6-13" tabindex="-1"></a></span>
+<span id="cb6-14"><a href="#cb6-14" tabindex="-1"></a>subdivision_profile <span class="ot">&lt;-</span> topical_fields <span class="sc">|&gt;</span></span>
+<span id="cb6-15"><a href="#cb6-15" tabindex="-1"></a>  <span class="fu">group_by</span>(subdivision_group) <span class="sc">|&gt;</span></span>
+<span id="cb6-16"><a href="#cb6-16" tabindex="-1"></a>  <span class="fu">summarise</span>(</span>
+<span id="cb6-17"><a href="#cb6-17" tabindex="-1"></a>    <span class="at">field_instances =</span> <span class="fu">n</span>(),</span>
+<span id="cb6-18"><a href="#cb6-18" tabindex="-1"></a>    <span class="at">with_0 =</span> <span class="fu">sum</span>(has_0),</span>
+<span id="cb6-19"><a href="#cb6-19" tabindex="-1"></a>    <span class="at">percent_with_0 =</span> <span class="dv">100</span> <span class="sc">*</span> <span class="fu">mean</span>(has_0),</span>
+<span id="cb6-20"><a href="#cb6-20" tabindex="-1"></a>    <span class="at">.groups =</span> <span class="st">&quot;drop&quot;</span></span>
+<span id="cb6-21"><a href="#cb6-21" tabindex="-1"></a>  )</span>
+<span id="cb6-22"><a href="#cb6-22" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(</span>
+<span id="cb6-23"><a href="#cb6-23" tabindex="-1"></a>  subdivision_profile, <span class="at">digits =</span> <span class="dv">1</span>,</span>
+<span id="cb6-24"><a href="#cb6-24" tabindex="-1"></a>  <span class="at">caption =</span> <span class="st">&quot;Topical 650 fields by number of subdivisions and presence of $0.&quot;</span></span>
+<span id="cb6-25"><a href="#cb6-25" tabindex="-1"></a>)</span></code></pre></div>
+<table>
+<caption>Topical 650 fields by number of subdivisions and presence of
+$0.</caption>
+<thead>
+<tr class="header">
+<th align="left">subdivision_group</th>
+<th align="right">field_instances</th>
+<th align="right">with_0</th>
+<th align="right">percent_with_0</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">None</td>
+<td align="right">509</td>
+<td align="right">484</td>
+<td align="right">95.1</td>
+</tr>
+<tr class="even">
+<td align="left">One</td>
+<td align="right">761</td>
+<td align="right">254</td>
+<td align="right">33.4</td>
+</tr>
+<tr class="odd">
+<td align="left">Two or more</td>
+<td align="right">501</td>
+<td align="right">23</td>
+<td align="right">4.6</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="fu">barplot</span>(</span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a>  subdivision_profile<span class="sc">$</span>percent_with_0,</span>
+<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a>  <span class="at">names.arg =</span> subdivision_profile<span class="sc">$</span>subdivision_group,</span>
+<span id="cb7-4"><a href="#cb7-4" tabindex="-1"></a>  <span class="at">ylim =</span> <span class="fu">c</span>(<span class="dv">0</span>, <span class="dv">100</span>),</span>
+<span id="cb7-5"><a href="#cb7-5" tabindex="-1"></a>  <span class="at">ylab =</span> <span class="st">&quot;650 field instances with nonempty $0 (%)&quot;</span>,</span>
+<span id="cb7-6"><a href="#cb7-6" tabindex="-1"></a>  <span class="at">xlab =</span> <span class="st">&quot;Number of subject subdivisions&quot;</span>,</span>
+<span id="cb7-7"><a href="#cb7-7" tabindex="-1"></a>  <span class="at">col =</span> <span class="st">&quot;grey70&quot;</span>, <span class="at">border =</span> <span class="st">&quot;grey35&quot;</span></span>
+<span id="cb7-8"><a href="#cb7-8" tabindex="-1"></a>)</span></code></pre></div>
+<div class="float">
+<img src="data:image/png;base64,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" alt="Authority identifier presence by subdivision complexity, among 650 field instances." />
+<div class="figcaption">Authority identifier presence by subdivision
+complexity, among 650 field instances.</div>
+</div>
+<p>The difference is pronounced: <strong>484 of 509</strong>
+<code>650</code> fields without a subdivision contain <code>$0</code>
+(<strong>95.1%</strong>); the figure falls to <strong>254 of 761
+(33.4%)</strong> for one subdivision and <strong>23 of 501
+(4.6%)</strong> for two or more. This is an <em>association within the
+observed fields</em>, not evidence that adding subdivisions causes
+identifiers to disappear. In particular, an authority number may
+identify an established heading, while a string of subdivisions may
+require different treatment.</p>
+<div id="check-an-important-confounding-factor-subject-vocabulary" class="section level3">
+<h3>Check an important confounding factor: subject vocabulary</h3>
+<p>MARC field <code>650</code> uses its <strong>second
+indicator</strong> to identify the subject heading system: for example,
+<code>0</code> denotes Library of Congress Subject Headings, while
+<code>7</code> denotes a source named in <code>$2</code>. Since the
+cataloguing conventions may differ by system, a pooled percentage can
+conceal distinct patterns. The <a href="https://www.loc.gov/marc/bibliographic/bd650.html">Library of
+Congress 650 documentation</a> describes these indicators and
+subfields.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>vocabulary_profile <span class="ot">&lt;-</span> topical_fields <span class="sc">|&gt;</span></span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>  <span class="fu">group_by</span>(ind2) <span class="sc">|&gt;</span></span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>  <span class="fu">summarise</span>(</span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>    <span class="at">field_instances =</span> <span class="fu">n</span>(),</span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a>    <span class="at">with_0 =</span> <span class="fu">sum</span>(has_0),</span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a>    <span class="at">percent_with_0 =</span> <span class="dv">100</span> <span class="sc">*</span> <span class="fu">mean</span>(has_0),</span>
+<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a>    <span class="at">.groups =</span> <span class="st">&quot;drop&quot;</span></span>
+<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a>  ) <span class="sc">|&gt;</span></span>
+<span id="cb8-9"><a href="#cb8-9" tabindex="-1"></a>  <span class="fu">arrange</span>(<span class="fu">desc</span>(field_instances))</span>
+<span id="cb8-10"><a href="#cb8-10" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(</span>
+<span id="cb8-11"><a href="#cb8-11" tabindex="-1"></a>  vocabulary_profile, <span class="at">digits =</span> <span class="dv">1</span>,</span>
+<span id="cb8-12"><a href="#cb8-12" tabindex="-1"></a>  <span class="at">caption =</span> <span class="st">&quot;Topical 650 fields by second indicator (subject-heading system).&quot;</span></span>
+<span id="cb8-13"><a href="#cb8-13" tabindex="-1"></a>)</span></code></pre></div>
+<table>
+<caption>Topical 650 fields by second indicator (subject-heading
+system).</caption>
+<thead>
+<tr class="header">
+<th align="left">ind2</th>
+<th align="right">field_instances</th>
+<th align="right">with_0</th>
+<th align="right">percent_with_0</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">0</td>
+<td align="right">1631</td>
+<td align="right">623</td>
+<td align="right">38.2</td>
+</tr>
+<tr class="even">
+<td align="left">7</td>
+<td align="right">121</td>
+<td align="right">119</td>
+<td align="right">98.3</td>
+</tr>
+<tr class="odd">
+<td align="left">2</td>
+<td align="right">15</td>
+<td align="right">15</td>
+<td align="right">100.0</td>
+</tr>
+<tr class="even">
+<td align="left">6</td>
+<td align="right">4</td>
+<td align="right">4</td>
+<td align="right">100.0</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a></span>
+<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a>lcsh_profile <span class="ot">&lt;-</span> topical_fields <span class="sc">|&gt;</span></span>
+<span id="cb9-3"><a href="#cb9-3" tabindex="-1"></a>  <span class="fu">filter</span>(ind2 <span class="sc">==</span> <span class="st">&quot;0&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb9-4"><a href="#cb9-4" tabindex="-1"></a>  <span class="fu">group_by</span>(subdivision_group) <span class="sc">|&gt;</span></span>
+<span id="cb9-5"><a href="#cb9-5" tabindex="-1"></a>  <span class="fu">summarise</span>(</span>
+<span id="cb9-6"><a href="#cb9-6" tabindex="-1"></a>    <span class="at">field_instances =</span> <span class="fu">n</span>(),</span>
+<span id="cb9-7"><a href="#cb9-7" tabindex="-1"></a>    <span class="at">with_0 =</span> <span class="fu">sum</span>(has_0),</span>
+<span id="cb9-8"><a href="#cb9-8" tabindex="-1"></a>    <span class="at">percent_with_0 =</span> <span class="dv">100</span> <span class="sc">*</span> <span class="fu">mean</span>(has_0),</span>
+<span id="cb9-9"><a href="#cb9-9" tabindex="-1"></a>    <span class="at">.groups =</span> <span class="st">&quot;drop&quot;</span></span>
+<span id="cb9-10"><a href="#cb9-10" tabindex="-1"></a>  )</span>
+<span id="cb9-11"><a href="#cb9-11" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(</span>
+<span id="cb9-12"><a href="#cb9-12" tabindex="-1"></a>  lcsh_profile, <span class="at">digits =</span> <span class="dv">1</span>,</span>
+<span id="cb9-13"><a href="#cb9-13" tabindex="-1"></a>  <span class="at">caption =</span> <span class="st">&quot;Subdivision association restricted to 650 fields with second indicator 0.&quot;</span></span>
+<span id="cb9-14"><a href="#cb9-14" tabindex="-1"></a>)</span></code></pre></div>
+<table>
+<caption>Subdivision association restricted to 650 fields with second
+indicator 0.</caption>
+<thead>
+<tr class="header">
+<th align="left">subdivision_group</th>
+<th align="right">field_instances</th>
+<th align="right">with_0</th>
+<th align="right">percent_with_0</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">None</td>
+<td align="right">406</td>
+<td align="right">383</td>
+<td align="right">94.3</td>
+</tr>
+<tr class="even">
+<td align="left">One</td>
+<td align="right">728</td>
+<td align="right">221</td>
+<td align="right">30.4</td>
+</tr>
+<tr class="odd">
+<td align="left">Two or more</td>
+<td align="right">497</td>
+<td align="right">19</td>
+<td align="right">3.8</td>
+</tr>
+</tbody>
+</table>
+<p>The strong gradient remains within second-indicator <code>0</code>:
+<strong>383/406 (94.3%)</strong> with no subdivision, <strong>221/728
+(30.4%)</strong> with one and <strong>19/497 (3.8%)</strong> with two or
+more. This descriptive check rules out the <em>simple</em> explanation
+that the overall gradient arises only because different subject heading
+systems were pooled. It does not exclude other sources of confounding,
+and fields within a record are not independent observations.</p>
+</div>
+</div>
+<div id="return-from-a-statistical-pattern-to-original-marc-fields" class="section level2">
+<h2>5. Return from a statistical pattern to original MARC fields</h2>
+<p>A statistical anomaly is useful when it leads to a transparent,
+reproducible list for human inspection. For example, we can retrieve
+highly subdivided <code>650</code> fields without <code>$0</code>,
+together with their original record control number and title. They are
+<strong>candidates for examination</strong>, not automatically
+errors.</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" tabindex="-1"></a>control_numbers <span class="ot">&lt;-</span> marc <span class="sc">|&gt;</span></span>
+<span id="cb10-2"><a href="#cb10-2" tabindex="-1"></a>  <span class="fu">filter</span>(field_type <span class="sc">==</span> <span class="st">&quot;controlfield&quot;</span>, tag <span class="sc">==</span> <span class="st">&quot;001&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb10-3"><a href="#cb10-3" tabindex="-1"></a>  <span class="fu">transmute</span>(record_id, <span class="at">control_001 =</span> value)</span>
+<span id="cb10-4"><a href="#cb10-4" tabindex="-1"></a></span>
+<span id="cb10-5"><a href="#cb10-5" tabindex="-1"></a>titles <span class="ot">&lt;-</span> marc <span class="sc">|&gt;</span></span>
+<span id="cb10-6"><a href="#cb10-6" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;245&quot;</span>, subfield_code <span class="sc">==</span> <span class="st">&quot;a&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb10-7"><a href="#cb10-7" tabindex="-1"></a>  <span class="fu">group_by</span>(record_id) <span class="sc">|&gt;</span></span>
+<span id="cb10-8"><a href="#cb10-8" tabindex="-1"></a>  <span class="fu">summarise</span>(<span class="at">title =</span> <span class="fu">first</span>(value), <span class="at">.groups =</span> <span class="st">&quot;drop&quot;</span>)</span>
+<span id="cb10-9"><a href="#cb10-9" tabindex="-1"></a></span>
+<span id="cb10-10"><a href="#cb10-10" tabindex="-1"></a><span class="co"># Retain each subdivision&#39;s original value for human interpretation.</span></span>
+<span id="cb10-11"><a href="#cb10-11" tabindex="-1"></a>subject_text <span class="ot">&lt;-</span> marc <span class="sc">|&gt;</span></span>
+<span id="cb10-12"><a href="#cb10-12" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>, subfield_code <span class="sc">%in%</span> <span class="fu">c</span>(<span class="st">&quot;a&quot;</span>, <span class="st">&quot;v&quot;</span>, <span class="st">&quot;x&quot;</span>, <span class="st">&quot;y&quot;</span>, <span class="st">&quot;z&quot;</span>)) <span class="sc">|&gt;</span></span>
+<span id="cb10-13"><a href="#cb10-13" tabindex="-1"></a>  <span class="fu">arrange</span>(record_id, field_order, subfield_order) <span class="sc">|&gt;</span></span>
+<span id="cb10-14"><a href="#cb10-14" tabindex="-1"></a>  <span class="fu">group_by</span>(record_id, field_order) <span class="sc">|&gt;</span></span>
+<span id="cb10-15"><a href="#cb10-15" tabindex="-1"></a>  <span class="fu">summarise</span>(<span class="at">heading =</span> <span class="fu">paste</span>(value, <span class="at">collapse =</span> <span class="st">&quot; -- &quot;</span>), <span class="at">.groups =</span> <span class="st">&quot;drop&quot;</span>)</span>
+<span id="cb10-16"><a href="#cb10-16" tabindex="-1"></a></span>
+<span id="cb10-17"><a href="#cb10-17" tabindex="-1"></a>inspection <span class="ot">&lt;-</span> topical_fields <span class="sc">|&gt;</span></span>
+<span id="cb10-18"><a href="#cb10-18" tabindex="-1"></a>  <span class="fu">filter</span>(n_subdivisions <span class="sc">&gt;=</span> <span class="dv">2</span><span class="dt">L</span>, <span class="sc">!</span>has_0) <span class="sc">|&gt;</span></span>
+<span id="cb10-19"><a href="#cb10-19" tabindex="-1"></a>  <span class="fu">arrange</span>(<span class="fu">desc</span>(n_subdivisions), record_id, field_order) <span class="sc">|&gt;</span></span>
+<span id="cb10-20"><a href="#cb10-20" tabindex="-1"></a>  <span class="fu">slice_head</span>(<span class="at">n =</span> <span class="dv">8</span><span class="dt">L</span>) <span class="sc">|&gt;</span></span>
+<span id="cb10-21"><a href="#cb10-21" tabindex="-1"></a>  <span class="fu">left_join</span>(control_numbers, <span class="at">by =</span> <span class="st">&quot;record_id&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb10-22"><a href="#cb10-22" tabindex="-1"></a>  <span class="fu">left_join</span>(titles, <span class="at">by =</span> <span class="st">&quot;record_id&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb10-23"><a href="#cb10-23" tabindex="-1"></a>  <span class="fu">left_join</span>(subject_text, <span class="at">by =</span> <span class="fu">c</span>(<span class="st">&quot;record_id&quot;</span>, <span class="st">&quot;field_order&quot;</span>)) <span class="sc">|&gt;</span></span>
+<span id="cb10-24"><a href="#cb10-24" tabindex="-1"></a>  <span class="fu">select</span>(control_001, title, heading, n_subdivisions)</span>
+<span id="cb10-25"><a href="#cb10-25" tabindex="-1"></a></span>
+<span id="cb10-26"><a href="#cb10-26" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(</span>
+<span id="cb10-27"><a href="#cb10-27" tabindex="-1"></a>  inspection, <span class="at">caption =</span> <span class="st">&quot;Illustrative 650 fields for inspection (not a list of errors).&quot;</span></span>
+<span id="cb10-28"><a href="#cb10-28" tabindex="-1"></a>)</span></code></pre></div>
+<table>
+<caption>Illustrative 650 fields for inspection (not a list of
+errors).</caption>
+<colgroup>
+<col width="6%" />
+<col width="39%" />
+<col width="45%" />
+<col width="8%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">control_001</th>
+<th align="left">title</th>
+<th align="left">heading</th>
+<th align="right">n_subdivisions</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">000048475</td>
+<td align="left">Wage statistics of class I railroads in the United
+States.</td>
+<td align="left">Railroads – Employees – Pensions – United States –
+Statistics – Periodicals.</td>
+<td align="right">5</td>
+</tr>
+<tr class="even">
+<td align="left">000033425</td>
+<td align="left">Symposium on Particulate Control in Energy Processes
+/</td>
+<td align="left">Air – Pollution – United States – Equipment and
+supplies – Congresses.</td>
+<td align="right">4</td>
+</tr>
+<tr class="odd">
+<td align="left">000038455</td>
+<td align="left">Area wage survey.</td>
+<td align="left">Wages – Massachusetts – Warwick – Statistics –
+Periodicals.</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">000038455</td>
+<td align="left">Area wage survey.</td>
+<td align="left">Wages – Rhode Island – Pawtucket Metropolitan Area –
+Statistics – Periodicals.</td>
+<td align="right">4</td>
+</tr>
+<tr class="odd">
+<td align="left">000038455</td>
+<td align="left">Area wage survey.</td>
+<td align="left">Wages – Rhode Island – Providence Metropolitan Area –
+Statistics – Periodicals.</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">000038461</td>
+<td align="left">Area wage survey.</td>
+<td align="left">Wages – Ohio – Canton Metropolitan Area – Statistics –
+Periodicals.</td>
+<td align="right">4</td>
+</tr>
+<tr class="odd">
+<td align="left">000038476</td>
+<td align="left">Area wage survey.</td>
+<td align="left">Wages – Tennessee – Chattanooga Metropolitan Area –
+Statistics – Periodicals.</td>
+<td align="right">4</td>
+</tr>
+<tr class="even">
+<td align="left">000000659</td>
+<td align="left">Directory, Federal, State, county, and city government
+consumer offices.</td>
+<td align="left">Consumer education – United States – Information
+services – Directories.</td>
+<td align="right">3</td>
+</tr>
+</tbody>
+</table>
+<p>The original <code>marc</code> table remains available for inspecting
+indicators, additional subfields and neighbouring fields. This is a
+reason to retain the canonical representation until the analytical
+question is settled: flattening all subjects into a single record-level
+string would lose the association between a particular subdivided
+heading and its <code>$0</code>.</p>
+</div>
+<div id="from-a-sample-to-a-catalogue-scale-study" class="section level2">
+<h2>6. From a sample to a catalogue-scale study</h2>
+<p>The sample is intentionally small enough for the vignette to build
+during package checks. To repeat the analysis on a full MARCXML file,
+point <code>read_marcxml()</code> at that file if the resulting table
+fits comfortably in R. For a larger collection,
+<code>marcxml_to_parquet()</code> stores the same canonical columns on
+disk. The following code is <strong>not executed by this
+vignette</strong>; it requires local GPO files and the optional
+<code>arrow</code> package.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" tabindex="-1"></a>input_dir <span class="ot">&lt;-</span> <span class="st">&quot;/path/to/benchmark-inputs&quot;</span></span>
+<span id="cb11-2"><a href="#cb11-2" tabindex="-1"></a>source_files <span class="ot">&lt;-</span> <span class="fu">sort</span>(<span class="fu">Sys.glob</span>(<span class="fu">file.path</span>(</span>
+<span id="cb11-3"><a href="#cb11-3" tabindex="-1"></a>  input_dir, <span class="st">&quot;cataloging-records-all-cgp-XML-*.xml&quot;</span></span>
+<span id="cb11-4"><a href="#cb11-4" tabindex="-1"></a>)))</span>
+<span id="cb11-5"><a href="#cb11-5" tabindex="-1"></a></span>
+<span id="cb11-6"><a href="#cb11-6" tabindex="-1"></a><span class="fu">marcxml_to_parquet</span>(</span>
+<span id="cb11-7"><a href="#cb11-7" tabindex="-1"></a>  source_files,</span>
+<span id="cb11-8"><a href="#cb11-8" tabindex="-1"></a>  <span class="at">output_dir =</span> <span class="st">&quot;gpo-canonical-parquet&quot;</span>,</span>
+<span id="cb11-9"><a href="#cb11-9" tabindex="-1"></a>  <span class="at">batch_records =</span> <span class="dv">5000</span><span class="dt">L</span>,</span>
+<span id="cb11-10"><a href="#cb11-10" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">4</span><span class="dt">L</span></span>
+<span id="cb11-11"><a href="#cb11-11" tabindex="-1"></a>)</span>
+<span id="cb11-12"><a href="#cb11-12" tabindex="-1"></a></span>
+<span id="cb11-13"><a href="#cb11-13" tabindex="-1"></a>ds <span class="ot">&lt;-</span> arrow<span class="sc">::</span><span class="fu">open_dataset</span>(<span class="st">&quot;gpo-canonical-parquet&quot;</span>)</span>
+<span id="cb11-14"><a href="#cb11-14" tabindex="-1"></a></span>
+<span id="cb11-15"><a href="#cb11-15" tabindex="-1"></a><span class="co"># Field-instance counts, not canonical-row counts.</span></span>
+<span id="cb11-16"><a href="#cb11-16" tabindex="-1"></a>by_vocabulary <span class="ot">&lt;-</span> ds <span class="sc">|&gt;</span></span>
+<span id="cb11-17"><a href="#cb11-17" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb11-18"><a href="#cb11-18" tabindex="-1"></a>  <span class="fu">distinct</span>(record_id, field_order, ind2) <span class="sc">|&gt;</span></span>
+<span id="cb11-19"><a href="#cb11-19" tabindex="-1"></a>  <span class="fu">count</span>(ind2, <span class="at">name =</span> <span class="st">&quot;field_instances&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb11-20"><a href="#cb11-20" tabindex="-1"></a>  <span class="fu">collect</span>()</span>
+<span id="cb11-21"><a href="#cb11-21" tabindex="-1"></a></span>
+<span id="cb11-22"><a href="#cb11-22" tabindex="-1"></a>with_id <span class="ot">&lt;-</span> ds <span class="sc">|&gt;</span></span>
+<span id="cb11-23"><a href="#cb11-23" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>, subfield_code <span class="sc">==</span> <span class="st">&quot;0&quot;</span>,</span>
+<span id="cb11-24"><a href="#cb11-24" tabindex="-1"></a>         <span class="sc">!</span><span class="fu">is.na</span>(value), value <span class="sc">!=</span> <span class="st">&quot;&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb11-25"><a href="#cb11-25" tabindex="-1"></a>  <span class="fu">distinct</span>(record_id, field_order, ind2) <span class="sc">|&gt;</span></span>
+<span id="cb11-26"><a href="#cb11-26" tabindex="-1"></a>  <span class="fu">count</span>(ind2, <span class="at">name =</span> <span class="st">&quot;with_0&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb11-27"><a href="#cb11-27" tabindex="-1"></a>  <span class="fu">collect</span>()</span>
+<span id="cb11-28"><a href="#cb11-28" tabindex="-1"></a></span>
+<span id="cb11-29"><a href="#cb11-29" tabindex="-1"></a><span class="fu">left_join</span>(by_vocabulary, with_id, <span class="at">by =</span> <span class="st">&quot;ind2&quot;</span>)</span></code></pre></div>
+<p>A study of the full corpus would need to document which source files
+were included, any malformed records excluded, the date of the extract,
+and the sampling frame. It would also be worthwhile to stratify by
+cataloguing agency, type of material, date of record modification, or
+other defensible covariates before interpreting differences in authority
+linking. A publication’s date in <code>008</code> should
+<strong>not</strong> be mistaken for the date when its metadata were
+created or enhanced.</p>
+</div>
+<div id="conclusions" class="section level2">
+<h2>Conclusions</h2>
+<p>This example illustrates three levels of statistical description
+enabled by the same canonical MARCXML representation: record-level
+coverage, the per-record distribution of repeated fields, and
+conditional frequencies at the field-instance level. The final
+association between <code>$0</code> and subject subdivisions would be
+easy to mismeasure if subject field boundaries were lost. It remains a
+<strong>descriptive observation requiring bibliographic
+interpretation</strong>, not a cataloguing compliance score or a claim
+of causality.</p>
+</div>
+
+
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>
