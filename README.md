@@ -168,8 +168,9 @@ ordinary tabular data. Four requirements guide the design of `marcxmlr`:
 
 1. **Structural fidelity.** Preserve the represented MARC structure and values,
    including the Leader, control fields, data-field instances, indicators,
-   repeated fields and subfields, and their order. This is a structural rather
-   than byte-for-byte XML round trip; see [the discussion of structural preservation](#what-semantic-preservation-means).
+   repeated fields and subfields, and their order. Writing the data back to
+   MARCXML preserves this structure and its values, but not the exact text or
+   formatting of the original XML file; see [the discussion of structural preservation](#what-semantic-preservation-means).
 2. **General-purpose tabular interoperability.** Use one rectangular table with
    a fixed set of columns and ordinary scalar values, without list columns,
    nested objects, specially encoded cells or auxiliary tables. The result can
@@ -623,12 +624,12 @@ A structurally coherent canonical table can be serialized again:
 out_xml <- tempfile(fileext = ".xml")
 write_marcxml(edited, out_xml)
 
-roundtrip <- read_marcxml(out_xml)
-identical(edited, roundtrip)
+reimported <- read_marcxml(out_xml)
+identical(edited, reimported)
 #> [1] TRUE
 ```
 
-The round trip preserves the MARC semantics represented by the canonical table,
+Writing the table to MARCXML and reading it again preserves the MARC semantics represented by the canonical table,
 not incidental XML formatting such as indentation or attribute order.
 
 A complete record can likewise be selected and exported with ordinary table
