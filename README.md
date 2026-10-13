@@ -830,10 +830,7 @@ with ordinary R tools.
 
 For further reading:
 
-* [Workflow vignette](vignettes/marcxmlr-workflow.Rmd) — a shorter executable
-  read → inspect/query → diagnose → write → Parquet walkthrough. After installing
-  a package build that includes the vignette, it can also be opened with
-  `browseVignettes("marcxmlr")`.
+* [Statistical profiling of bibliographic metadata](https://larry77.github.io/marcxmlr/marcxmlr-workflow.html) — an applied statistical analysis of 1,000 genuine GPO bibliographic records. It examines metadata coverage, subject indexing, authority identifiers and their relationship with subject-heading complexity.
 * [Technical implementation and performance](https://github.com/larry77/marcxmlr/blob/main/TECHNICAL.md) — optional deeper
   reading on compiled parsing, bounded-memory processing, Arrow-backed writing,
   parallel execution, validation internals and benchmark methodology.
