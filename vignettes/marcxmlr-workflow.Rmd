@@ -1,9 +1,9 @@
 ---
-title: "A practical marcxmlr workflow"
+title: "Statistical profiling of bibliographic metadata with marcxmlr"
 author: "Lorenzo Isella"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{A practical marcxmlr workflow}
+  %\VignetteIndexEntry{Statistical profiling of bibliographic metadata with marcxmlr}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -17,298 +17,415 @@ knitr::opts_chunk$set(
 )
 ```
 
-## Overview
+## A catalogue as a statistical population
 
-`marcxmlr` reads MARC 21 XML into a fixed 11-column canonical table that
-preserves record structure, source order, repeated fields, repeated subfields,
-and indicators. The same representation can be queried with ordinary R tools,
-checked after editing, written back to MARCXML, or stored as Parquet for larger
-collections.
+A bibliographic catalogue can be studied statistically: which kinds of subject
+access are present, how many subject headings are assigned to individual
+records, and how often do those headings carry machine-readable authority
+identifiers? These are descriptive questions about *records* and *field
+instances*, not questions about XML parsing. They also have practical uses in
+catalogue assessment and in identifying records for closer examination.
 
-This vignette follows one complete workflow:
+This vignette develops a small case study using genuine MARCXML data. It focuses
+on a finding that merits investigation: **the occurrence of an authority
+identifier in topical subject fields varies strongly with the number of subject
+subdivisions**. We do not treat the absence of an identifier as proof of a
+cataloguing error. The package [README](https://github.com/larry77/marcxmlr)
+introduces MARCXML, the canonical representation, editing and reconstruction;
+those examples are deliberately not repeated here.
 
-1. read a MARCXML collection;
-2. inspect repeated MARC structure;
-3. query and derive analytical data with `dplyr`;
-4. edit a repeated subfield;
-5. diagnose and serialize the canonical representation; and
-6. optionally move the same schema to a Parquet-backed workflow.
+### Dataset and limits of inference
 
-All examples use the same synthetic Orwell MARCXML record used in the README.
-It is bundled with the package, so the vignette is offline and quick to build.
+The analysis uses **1,000 genuine bibliographic records** sampled from the GPO collection and included with the package as a fixed MARCXML file. The source is the
+U.S. Government Publishing Office's (GPO) *Catalog of U.S. Government
+Publications*. The frozen source corpus and reproducibility material associated
+with the package evaluation are documented on
+[Zenodo](https://doi.org/10.5281/zenodo.23160503).
 
-## Read MARCXML
+The sample represents only **part 00**, not the complete GPO catalogue. Its
+records predominantly describe publications from the 1970s. Statistics below
+refer to the **sample as observed** and are not estimates of the whole GPO
+catalogue or of changes through time. This example file is included in the
+package so the vignette can render without a network connection. The XML data
+are real; any interpretation of their metadata remains conditional on
+cataloguing practice and context.
 
-```{r read}
+```{r load}
 library(marcxmlr)
 library(dplyr)
 
-source_xml <- system.file(
-  "extdata",
-  "orwell-marcxml.xml",
-  package = "marcxmlr"
+xml_file <- system.file(
+  "extdata", "gpo-cgp-part00-sample.xml",
+  package = "marcxmlr", mustWork = TRUE
+)
+marc <- read_marcxml(xml_file)
+
+n_records <- n_distinct(marc$record_id)
+field_instances <- marc |>
+  filter(field_type == "datafield") |>
+  distinct(record_id, field_order, tag)
+
+overview <- data.frame(
+  Measure = c("Bibliographic records", "Canonical rows", "Data-field instances"),
+  Value = c(n_records, nrow(marc), nrow(field_instances))
+)
+knitr::kable(overview, format.args = list(big.mark = ","))
+```
+
+The canonical format stores one row per subfield occurrence in a MARC data
+field. Thus a field containing `$a`, `$x` and `$0` contributes three rows but
+only **one field instance**, identified by `(record_id, field_order)`.
+Likewise, a record containing three `650` fields is **one record** but three
+subject-field instances. We will make each denominator explicit.
+
+## 1. Coverage: how often does a record have topical subject access?
+
+Our first unit is the *bibliographic record*. We measure the presence of
+selected MARC fields without treating any of them as mandatory for every
+record. For example, `650` means a topical subject added entry; other MARC
+fields can also represent subject access.
+
+```{r coverage}
+tags_of_interest <- data.frame(
+  tag = c("245", "650", "651", "655", "710", "856"),
+  meaning = c(
+    "Title statement", "Topical subject", "Geographic subject",
+    "Genre/form term", "Corporate added entry", "Electronic location/access"
+  )
 )
 
-marc <- read_marcxml(source_xml)
-marc
-```
-
-The result is an ordinary tibble with the canonical 11-column schema:
-
-```{r schema}
-names(marc)
-```
-
-The columns are `record_id`, `field_type`, `tag`, `subfield_code`, `value`,
-`field_order`, `field_occurrence`, `ind1`, `ind2`, `subfield_order`, and
-`subfield_occurrence`.
-
-`record_id`, `field_order`, and `subfield_order` locate values in the represented
-MARC structure. `field_occurrence` and `subfield_occurrence` are derived
-analytical coordinates that make repetitions easier to address.
-
-## Inspect repeated structure
-
-The first record contains an `856` field with two `$y` subfields. Their source
-order and separate occurrences remain explicit:
-
-```{r repeated-subfields}
-marc |>
-  filter(record_id == 1L, tag == "856") |>
-  select(
-    subfield_code,
-    value,
-    subfield_order,
-    subfield_occurrence
-  )
-```
-
-Repeated fields are preserved in the same way. The first record contains two
-`650` fields:
-
-```{r repeated-fields}
-marc |>
-  filter(record_id == 1L, tag == "650", subfield_code == "a") |>
-  select(record_id, field_order, field_occurrence, value)
-```
-
-This is why `marcxmlr` does not flatten MARCXML directly to one row per
-bibliographic record: repeated field and subfield relationships remain explicit
-until the analyst chooses how to simplify them.
-
-## Query with dplyr
-
-Because the canonical representation is a tibble, ordinary `dplyr` operations
-can be used directly. For example, title fields can be selected by MARC tag:
-
-```{r title-query}
-marc |>
-  filter(tag == "245") |>
-  select(record_id, subfield_code, value)
-```
-
-A condition can also select a complete field instance rather than only the row
-that matched. Rows with the same `record_id` and `field_order` belong to the
-same field instance:
-
-```{r complete-field}
-marc |>
-  group_by(record_id, field_order) |>
-  filter(
-    any(
-      tag == "650" &
-        subfield_code == "a" &
-        value == "Totalitarianism"
-    )
+coverage <- field_instances |>
+  filter(tag %in% tags_of_interest$tag) |>
+  distinct(record_id, tag) |>
+  count(tag, name = "records") |>
+  right_join(tags_of_interest, by = "tag") |>
+  mutate(
+    records = coalesce(records, 0L),
+    percent = 100 * records / n_records
   ) |>
-  ungroup() |>
-  select(record_id, field_order, tag, subfield_code, value)
+  select(tag, meaning, records, percent)
+
+knitr::kable(
+  coverage, digits = 1,
+  caption = "Record-level field coverage (denominator: all 1,000 records)."
+)
 ```
 
-## Derive a simpler analytical table
+The observed sample has 1,000 records with a `245` title field and **865 with
+at least one `650` field**. Only four have an `856` electronic-access field.
+The latter is not automatically a deficiency: the sample mainly concerns
+historical printed government publications. The coverage table measures
+*presence*, not adequacy or correctness.
 
-The canonical representation preserves MARC structure first. A simpler table
-can then be derived for a particular analysis.
+## 2. Indexing intensity: how many topical subject fields per record?
 
-```{r analytical-table}
+Next we count *field instances* within each *record*. Critically, the
+calculation begins with **all records**, including those with no `650`: a
+summary calculated only from `650` rows would omit zero-subject records and
+inflate the average.
+
+```{r subject-counts}
+subject_counts <- field_instances |>
+  filter(tag == "650") |>
+  count(record_id, name = "n_650") |>
+  right_join(
+    data.frame(record_id = unique(marc$record_id)),
+    by = "record_id"
+  ) |>
+  mutate(n_650 = coalesce(n_650, 0L)) |>
+  arrange(record_id)
+
+subject_summary <- data.frame(
+  Measure = c(
+    "Records with no 650", "Mean fields per record",
+    "Median fields per record", "90th percentile", "Maximum"
+  ),
+  Value = c(
+    sum(subject_counts$n_650 == 0L), mean(subject_counts$n_650),
+    median(subject_counts$n_650),
+    as.numeric(quantile(subject_counts$n_650, 0.90)),
+    max(subject_counts$n_650)
+  )
+)
+subject_summary$Value <- c(
+  sprintf("%.0f", subject_summary$Value[1]),
+  sprintf("%.2f", subject_summary$Value[2]),
+  sprintf("%.0f", subject_summary$Value[3:5])
+)
+knitr::kable(subject_summary)
+```
+
+```{r subject-count-figure, fig.width=6.3, fig.height=3.5, fig.cap="Topical subject fields per record. The last category combines records with five or more 650 fields."}
+subjects_binned <- factor(
+  pmin(subject_counts$n_650, 5L),
+  levels = 0:5,
+  labels = c("0", "1", "2", "3", "4", "5+")
+)
+barplot(
+  table(subjects_binned),
+  xlab = "Number of 650 fields in a record",
+  ylab = "Number of records",
+  col = "grey70", border = "grey35"
+)
+```
+
+The distribution is not captured by a single average: **135 records have no
+`650`**, the median is two fields per record, and the maximum is 14. Those
+figures are useful as descriptions of indexing intensity; they are not
+thresholds for correct cataloguing.
+
+## 3. Authority identifiers: use field instances, not subfield rows
+
+Our second question concerns subfield `$0`, which may carry an authority record
+control number or standard number. The appropriate denominator is the number
+of **field instances of each MARC tag**, not the total number of canonical
+rows, subfields or bibliographic records.
+
+We calculate a Boolean indicator once per field. Grouping by `record_id` and
+`field_order` is essential: a `$0` in one `650` field must not be attributed to
+another `650` field in the same record.
+
+```{r field-level-profiles}
+field_profiles <- marc |>
+  filter(field_type == "datafield") |>
+  group_by(record_id, field_order, tag, ind2) |>
+  summarise(
+    has_0 = any(
+      subfield_code == "0" & !is.na(value) & nzchar(trimws(value)),
+      na.rm = TRUE
+    ),
+    n_subdivisions = sum(subfield_code %in% c("v", "x", "y", "z")),
+    .groups = "drop"
+  )
+
+selected_tags <- c("100", "110", "650", "651", "655", "710")
+authority_by_tag <- field_profiles |>
+  filter(tag %in% selected_tags) |>
+  group_by(tag) |>
+  summarise(
+    field_instances = n(),
+    with_0 = sum(has_0),
+    percent_with_0 = 100 * mean(has_0),
+    .groups = "drop"
+  ) |>
+  arrange(tag)
+
+knitr::kable(
+  authority_by_tag, digits = 1,
+  caption = "Presence of nonempty $0 by MARC field tag (field-instance denominator)."
+)
+```
+
+The sample has nonempty `$0` values in **761 of 1,771 topical `650` fields
+(43.0%)**, compared with **590 of 629 `710` corporate added-entry fields
+(93.8%)** and **222 of 223 `655` genre/form fields (99.6%)**. These are
+heterogeneous metadata categories with different functions and cataloguing
+conventions, so their percentages should not be interpreted as a ranking of
+cataloguing quality. Moreover, subfield `$0` *presence* does not prove that an
+identifier resolves or refers to the correct entity.
+
+## 4. A more revealing association: subject subdivisions and `$0`
+
+A topical `650` heading can be subdivided by form (`$v`), topic (`$x`),
+period (`$y`) or place (`$z`). Are authority identifiers distributed similarly
+among simple and subdivided topical headings?
+
+Each row in `topical_fields` below represents **one complete `650` field**;
+`n_subdivisions` counts occurrences of `$v`, `$x`, `$y` and `$z` in that field.
+This is not a count of words or of distinct subdivision *types*.
+
+```{r subdivision-profile}
+topical_fields <- field_profiles |>
+  filter(tag == "650") |>
+  mutate(
+    subdivision_group = factor(
+      case_when(
+        n_subdivisions == 0L ~ "None",
+        n_subdivisions == 1L ~ "One",
+        TRUE ~ "Two or more"
+      ),
+      levels = c("None", "One", "Two or more")
+    )
+  )
+
+subdivision_profile <- topical_fields |>
+  group_by(subdivision_group) |>
+  summarise(
+    field_instances = n(),
+    with_0 = sum(has_0),
+    percent_with_0 = 100 * mean(has_0),
+    .groups = "drop"
+  )
+knitr::kable(
+  subdivision_profile, digits = 1,
+  caption = "Topical 650 fields by number of subdivisions and presence of $0."
+)
+```
+
+```{r subdivision-figure, fig.width=6.2, fig.height=3.5, fig.cap="Authority identifier presence by subdivision complexity, among 650 field instances."}
+barplot(
+  subdivision_profile$percent_with_0,
+  names.arg = subdivision_profile$subdivision_group,
+  ylim = c(0, 100),
+  ylab = "650 field instances with nonempty $0 (%)",
+  xlab = "Number of subject subdivisions",
+  col = "grey70", border = "grey35"
+)
+```
+
+The difference is pronounced: **484 of 509** `650` fields without a
+subdivision contain `$0` (**95.1%**); the figure falls to **254 of 761
+(33.4%)** for one subdivision and **23 of 501 (4.6%)** for two or more.
+This is an *association within the observed fields*, not evidence that adding
+subdivisions causes identifiers to disappear. In particular, an authority
+number may identify an established heading, while a string of subdivisions
+may require different treatment.
+
+### Check an important confounding factor: subject vocabulary
+
+MARC field `650` uses its **second indicator** to identify the subject heading
+system: for example, `0` denotes Library of Congress Subject Headings, while
+`7` denotes a source named in `$2`. Since the cataloguing conventions may
+differ by system, a pooled percentage can conceal distinct patterns. The
+[Library of Congress 650 documentation](https://www.loc.gov/marc/bibliographic/bd650.html)
+describes these indicators and subfields.
+
+```{r vocabulary-check}
+vocabulary_profile <- topical_fields |>
+  group_by(ind2) |>
+  summarise(
+    field_instances = n(),
+    with_0 = sum(has_0),
+    percent_with_0 = 100 * mean(has_0),
+    .groups = "drop"
+  ) |>
+  arrange(desc(field_instances))
+knitr::kable(
+  vocabulary_profile, digits = 1,
+  caption = "Topical 650 fields by second indicator (subject-heading system)."
+)
+
+lcsh_profile <- topical_fields |>
+  filter(ind2 == "0") |>
+  group_by(subdivision_group) |>
+  summarise(
+    field_instances = n(),
+    with_0 = sum(has_0),
+    percent_with_0 = 100 * mean(has_0),
+    .groups = "drop"
+  )
+knitr::kable(
+  lcsh_profile, digits = 1,
+  caption = "Subdivision association restricted to 650 fields with second indicator 0."
+)
+```
+
+The strong gradient remains within second-indicator `0`: **383/406
+(94.3%)** with no subdivision, **221/728 (30.4%)** with one and **19/497
+(3.8%)** with two or more. This descriptive check rules out the *simple*
+explanation that the overall gradient arises only because different subject
+heading systems were pooled. It does not exclude other sources of
+confounding, and fields within a record are not independent observations.
+
+## 5. Return from a statistical pattern to original MARC fields
+
+A statistical anomaly is useful when it leads to a transparent, reproducible
+list for human inspection. For example, we can retrieve highly subdivided
+`650` fields without `$0`, together with their original record control number
+and title. They are **candidates for examination**, not automatically errors.
+
+```{r inspection-list}
+control_numbers <- marc |>
+  filter(field_type == "controlfield", tag == "001") |>
+  transmute(record_id, control_001 = value)
+
 titles <- marc |>
   filter(tag == "245", subfield_code == "a") |>
-  transmute(record_id, title = value)
-
-subjects <- marc |>
-  filter(tag == "650") |>
-  group_by(record_id, field_order) |>
-  summarise(
-    subject = paste(value, collapse = " ; "),
-    .groups = "drop"
-  ) |>
   group_by(record_id) |>
-  summarise(
-    subjects = paste(subject, collapse = " | "),
-    .groups = "drop"
-  )
+  summarise(title = first(value), .groups = "drop")
 
-left_join(titles, subjects, by = "record_id")
-```
+# Retain each subdivision's original value for human interpretation.
+subject_text <- marc |>
+  filter(tag == "650", subfield_code %in% c("a", "v", "x", "y", "z")) |>
+  arrange(record_id, field_order, subfield_order) |>
+  group_by(record_id, field_order) |>
+  summarise(heading = paste(value, collapse = " -- "), .groups = "drop")
 
-This simplification is deliberately one-way. Once field membership or
-repetition has been collapsed, reconstructing the original MARC structure may
-no longer be possible.
+inspection <- topical_fields |>
+  filter(n_subdivisions >= 2L, !has_0) |>
+  arrange(desc(n_subdivisions), record_id, field_order) |>
+  slice_head(n = 8L) |>
+  left_join(control_numbers, by = "record_id") |>
+  left_join(titles, by = "record_id") |>
+  left_join(subject_text, by = c("record_id", "field_order")) |>
+  select(control_001, title, heading, n_subdivisions)
 
-## Edit a repeated subfield
-
-A specific repeated value can be addressed with the occurrence coordinates.
-Here only the second `856$y` value in the first record is changed:
-
-```{r edit}
-edited <- marc |>
-  mutate(
-    value = if_else(
-      record_id == 1L &
-        tag == "856" &
-        subfield_code == "y" &
-        subfield_occurrence == 2L,
-      "Backup access",
-      value
-    )
-  )
-
-edited |>
-  filter(record_id == 1L, tag == "856") |>
-  select(subfield_code, value, subfield_occurrence)
-```
-
-Only `value` has changed; the structural coordinates remain intact.
-
-## Check before writing
-
-After transformations that may affect MARC structure,
-`diagnose_canonical()` can be used to inspect whether the representation is
-still safe to serialize.
-
-```{r diagnose}
-diagnostics <- diagnose_canonical(edited)
-diagnostics
-```
-
-A zero-row diagnostics tibble means that no issue was found. Errors identify
-structural problems that prevent safe serialization. Warnings can identify
-stale or gapped analytical occurrence coordinates that can be regenerated on
-reread.
-
-`diagnose_canonical()` checks the structural contract used by `marcxmlr`; it is
-not a complete MARC 21 content validator and does not replace MARCXML schema
-validation.
-
-## Write MARCXML and read it back
-
-`write_marcxml()` serializes coherent canonical data back to MARCXML. Structural
-errors are rejected by the writer; with the default `check = TRUE`, warning-level
-diagnostics are also emitted before writing.
-
-```{r roundtrip}
-out_xml <- tempfile(fileext = ".xml")
-write_marcxml(edited, out_xml)
-
-roundtrip <- read_marcxml(out_xml)
-identical(edited, roundtrip)
-```
-
-A related workflow is to select complete records and export the result:
-
-```{r subset-roundtrip}
-selected <- marc |>
-  filter(record_id == 1L)
-
-selected_xml <- tempfile(fileext = ".xml")
-write_marcxml(selected, selected_xml)
-
-identical(selected, read_marcxml(selected_xml))
-```
-
-The round trip preserves the represented MARC structure and values. It does not
-promise byte-for-byte reproduction of incidental XML serialization details such
-as indentation or namespace-prefix spelling.
-
-## Recover from malformed MARC records
-
-By default, parsing stops when a structurally malformed MARC record is
-encountered. Alternatively, `on_marc_error = "skip"` allows processing to
-continue while skipping complete malformed records:
-
-```{r recovery, eval=FALSE}
-recovered <- read_marcxml(
-  "catalogue-with-malformed-records.xml",
-  on_marc_error = "skip",
-  error_report = "marc-errors.csv"
+knitr::kable(
+  inspection, caption = "Illustrative 650 fields for inspection (not a list of errors)."
 )
 ```
 
-An error report is required in skip mode. It identifies skipped records,
-explains the problem, and preserves their original XML. The same recovery
-options are available in `marcxml_to_parquet()`.
+The original `marc` table remains available for inspecting indicators,
+additional subfields and neighbouring fields. This is a reason to retain
+the canonical representation until the analytical question is settled:
+flattening all subjects into a single record-level string would lose the
+association between a particular subdivided heading and its `$0`.
 
-Skipped records leave gaps in the original `record_id` sequence. Such gaps
-may subsequently be reported as warnings by `diagnose_canonical()`.
+## 6. From a sample to a catalogue-scale study
 
-Recovery applies only to MARC-level structural problems. XML syntax and
-encoding errors remain fatal.
+The sample is intentionally small enough for the vignette to build during
+package checks. To repeat the analysis on a full MARCXML file, point
+`read_marcxml()` at that file if the resulting table fits comfortably in R.
+For a larger collection, `marcxml_to_parquet()` stores the same canonical
+columns on disk. The following code is **not executed by this vignette**;
+it requires local GPO files and the optional `arrow` package.
 
-## Move the same schema to Parquet
-
-For collections that are inconvenient to materialize as one R object,
-`marcxml_to_parquet()` writes the same canonical schema as a directory of
-Parquet files in bounded record batches. Arrow support is optional, so the
-following examples run only when the optional packages needed for this workflow
-are available.
-
-```{r parquet, eval=requireNamespace("arrow", quietly = TRUE) && requireNamespace("XML", quietly = TRUE)}
-parquet_dir <- tempfile("marcxmlr-parquet-")
+```{r full-catalogue, eval=FALSE}
+input_dir <- "/path/to/benchmark-inputs"
+source_files <- sort(Sys.glob(file.path(
+  input_dir, "cataloging-records-all-cgp-XML-*.xml"
+)))
 
 marcxml_to_parquet(
-  source_xml,
-  output_dir = parquet_dir,
-  workers = 1L,
-  verbose = FALSE
+  source_files,
+  output_dir = "gpo-canonical-parquet",
+  batch_records = 5000L,
+  workers = 4L
 )
 
-catalogue <- arrow::open_dataset(parquet_dir)
+ds <- arrow::open_dataset("gpo-canonical-parquet")
 
-catalogue |>
-  summarise(rows = n()) |>
+# Field-instance counts, not canonical-row counts.
+by_vocabulary <- ds |>
+  filter(tag == "650") |>
+  distinct(record_id, field_order, ind2) |>
+  count(ind2, name = "field_instances") |>
   collect()
-```
 
-The Parquet dataset can be queried lazily with Arrow and `dplyr` before a small
-result is collected into R:
-
-```{r parquet-query, eval=requireNamespace("arrow", quietly = TRUE) && requireNamespace("XML", quietly = TRUE)}
-catalogue |>
-  filter(tag == "650", subfield_code == "a") |>
-  count(value, sort = TRUE) |>
+with_id <- ds |>
+  filter(tag == "650", subfield_code == "0",
+         !is.na(value), value != "") |>
+  distinct(record_id, field_order, ind2) |>
+  count(ind2, name = "with_0") |>
   collect()
+
+left_join(by_vocabulary, with_id, by = "ind2")
 ```
 
-Opening the dataset is lazy; collecting the complete dataset would still bring
-all rows into R memory.
+A study of the full corpus would need to document which source files were
+included, any malformed records excluded, the date of the extract, and the
+sampling frame. It would also be worthwhile to stratify by cataloguing
+agency, type of material, date of record modification, or other defensible
+covariates before interpreting differences in authority linking. A
+publication's date in `008` should **not** be mistaken for the date when its
+metadata were created or enhanced.
 
-The same structural diagnostics can run directly on an Arrow dataset:
+## Conclusions
 
-```{r parquet-diagnostics, eval=requireNamespace("arrow", quietly = TRUE) && requireNamespace("XML", quietly = TRUE)}
-diagnose_canonical(catalogue)
-```
-
-Validation proceeds incrementally without collecting the entire dataset.
-Records must appear in non-decreasing `record_id` order.
-
-
-## Choosing a workflow
-
-For ordinary analysis, start with `read_marcxml()` and work with the returned
-tibble. Use `diagnose_canonical()` after transformations that may affect
-structure, and `write_marcxml()` when the result needs to return to MARCXML.
-
-Use `marcxml_to_parquet()` when keeping the complete canonical table in memory
-is undesirable or when a persistent Arrow/Parquet dataset is useful for repeated
-analytical queries. The logical 11-column representation is the same in both
-workflows.
+This example illustrates three levels of statistical description enabled by
+the same canonical MARCXML representation: record-level coverage, the
+per-record distribution of repeated fields, and conditional frequencies at
+the field-instance level. The final association between `$0` and subject
+subdivisions would be easy to mismeasure if subject field boundaries were
+lost. It remains a **descriptive observation requiring bibliographic
+interpretation**, not a cataloguing compliance score or a claim of causality.
