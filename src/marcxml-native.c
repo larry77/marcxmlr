@@ -3589,7 +3589,371 @@ SEXP C_marcxml_xml10_invalid(SEXP value) {
     return out;
 }
 
+/* -------------------------------------------------------------------------
+ * Experimental two-pass complete-record filter.
+ * First pass exposes only caller-requested MARC tags to R in bounded batches.
+ * R returns record decisions. The selected source positions and full canonical
+ * row counts are retained in the existing sparse-record plan; the unchanged
+ * recovery batch writer provides second-pass materialization. No recovery
+ * logic is applied: all screened records must pass strict native validation.
+ * This implementation is deliberately opt-in and does not affect normal calls.
+ * ------------------------------------------------------------------------- */
+
+typedef struct {
+    int record_id, field_order, subfield_order;
+    xmlChar *field_type, *tag, *subfield_code, *value, *ind1, *ind2;
+} filter_screen_row;
+
+typedef struct {
+    xmlTextReaderPtr reader;
+    int rc, root_seen, done, pending;
+    double n_max;
+    char **tags;
+    R_xlen_t n_tags;
+    marcxml_recovery_plan_state *plan;
+    filter_screen_row *rows;
+    R_xlen_t n_rows, row_capacity;
+    R_xlen_t *pending_rows;
+    int *pending_ids;
+    R_xlen_t n_pending, pending_capacity;
+} filter_screen_state;
+
+static void filter_screen_clear_rows(filter_screen_state *s) {
+    for (R_xlen_t i = 0; i < s->n_rows; ++i) {
+        filter_screen_row *r = &s->rows[i];
+        xmlFree(r->field_type);
+        xmlFree(r->tag);
+        xmlFree(r->subfield_code);
+        xmlFree(r->value);
+        xmlFree(r->ind1);
+        xmlFree(r->ind2);
+        memset(r, 0, sizeof(*r));
+    }
+    s->n_rows = 0;
+}
+
+static void filter_screen_free(filter_screen_state *s) {
+    if (!s) return;
+    if (s->reader) xmlFreeTextReader(s->reader);
+    filter_screen_clear_rows(s);
+    free(s->rows);
+    if (s->tags) {
+        for (R_xlen_t i = 0; i < s->n_tags; ++i) free(s->tags[i]);
+    }
+    free(s->tags);
+    free(s->pending_ids);
+    free(s->pending_rows);
+    recovery_plan_free(s->plan);
+    free(s);
+}
+
+static SEXP filter_screen_tag(void) {
+    return Rf_install("marcxmlr_experimental_filter_screen");
+}
+
+static void filter_screen_finalizer(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP) return;
+    filter_screen_state *s = (filter_screen_state *)R_ExternalPtrAddr(ext);
+    if (s) filter_screen_free(s);
+    R_ClearExternalPtr(ext);
+}
+
+static filter_screen_state *filter_screen_get(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP || R_ExternalPtrTag(ext) != filter_screen_tag())
+        Rf_error("Invalid experimental MARCXML screening handle.");
+    filter_screen_state *s = (filter_screen_state *)R_ExternalPtrAddr(ext);
+    if (!s) Rf_error("Experimental MARCXML screening handle was closed.");
+    return s;
+}
+
+static int filter_screen_wants_tag(const filter_screen_state *s, const xmlChar *tag) {
+    for (R_xlen_t i = 0; i < s->n_tags; ++i)
+        if (xmlStrEqual(tag, BAD_CAST s->tags[i])) return 1;
+    return 0;
+}
+
+static int filter_screen_append_row(filter_screen_state *s,
+    int record_id, int field_order, int subfield_order,
+    const xmlChar *field_type, const xmlChar *tag,
+    const xmlChar *subfield_code, xmlNodePtr content,
+    const xmlChar *ind1, const xmlChar *ind2) {
+    if (s->n_rows == R_XLEN_T_MAX || s->n_rows >= INT_MAX) return 0;
+    if (s->n_rows == s->row_capacity) {
+        R_xlen_t cap = s->row_capacity ? s->row_capacity * 2 : 256;
+        if (cap <= s->row_capacity ||
+            (uint64_t)cap > (uint64_t)SIZE_MAX / sizeof(filter_screen_row)) return 0;
+        filter_screen_row *tmp = (filter_screen_row *)realloc(s->rows,
+            (size_t)cap * sizeof(filter_screen_row));
+        if (!tmp) return 0;
+        s->rows = tmp;
+        s->row_capacity = cap;
+    }
+    filter_screen_row *r = &s->rows[s->n_rows];
+    memset(r, 0, sizeof(*r));
+    r->record_id = record_id;
+    r->field_order = field_order;
+    r->subfield_order = subfield_order;
+    r->field_type = xmlStrdup(field_type);
+    r->tag = xmlStrdup(tag);
+    if (subfield_code) r->subfield_code = xmlStrdup(subfield_code);
+    if (ind1) r->ind1 = xmlStrdup(ind1);
+    if (ind2) r->ind2 = xmlStrdup(ind2);
+    r->value = xmlNodeGetContent(content);
+    ++s->n_rows; /* ensure partially initialized memory can be cleaned */
+    return r->field_type && r->tag && r->value &&
+        (!subfield_code || r->subfield_code) &&
+        (!ind1 || r->ind1) && (!ind2 || r->ind2);
+}
+
+static int filter_screen_extract_record(filter_screen_state *s, xmlNodePtr root,
+                                        int record_id) {
+    int order = -1;
+    for (xmlNodePtr f = root->children; f; f = f->next) {
+        if (f->type != XML_ELEMENT_NODE) continue;
+        ++order;
+        int leader = named(f, "leader");
+        int control = named(f, "controlfield");
+        const xmlChar *tag = leader ? BAD_CAST "LDR" : attribute(f, "tag");
+        if (!filter_screen_wants_tag(s, tag)) continue;
+        if (leader || control) {
+            if (!filter_screen_append_row(s, record_id, order, NA_INTEGER,
+                    f->name, tag, NULL, f, NULL, NULL)) return 0;
+        } else {
+            int suborder = 0;
+            for (xmlNodePtr sub = f->children; sub; sub = sub->next) {
+                if (sub->type != XML_ELEMENT_NODE) continue;
+                ++suborder;
+                if (!filter_screen_append_row(s, record_id, order, suborder,
+                        f->name, tag, attribute(sub, "code"), sub,
+                        attribute(f, "ind1"), attribute(f, "ind2"))) return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static void filter_screen_append_pending(filter_screen_state *s,
+                                         int source_id, R_xlen_t nrows) {
+    if (s->n_pending == s->pending_capacity) {
+        R_xlen_t cap = s->pending_capacity ? s->pending_capacity * 2 : 256;
+        if (cap <= s->pending_capacity ||
+            (uint64_t)cap > (uint64_t)SIZE_MAX / sizeof(R_xlen_t) ||
+            (uint64_t)cap > (uint64_t)SIZE_MAX / sizeof(int))
+            Rf_error("Experimental MARCXML screening batch is too large.");
+        R_xlen_t *rr = (R_xlen_t *)realloc(s->pending_rows,
+                                         (size_t)cap * sizeof(R_xlen_t));
+        if (!rr) Rf_error("Could not allocate screening row-count buffer.");
+        s->pending_rows = rr;
+        int *ids = (int *)realloc(s->pending_ids, (size_t)cap * sizeof(int));
+        if (!ids) Rf_error("Could not allocate screening source-ID buffer.");
+        s->pending_ids = ids;
+        s->pending_capacity = cap;
+    }
+    s->pending_ids[s->n_pending] = source_id;
+    s->pending_rows[s->n_pending] = nrows;
+    ++s->n_pending;
+}
+
+SEXP attribute_visible C_marcxml_filter_screen_open(SEXP path, SEXP tags, SEXP n_max) {
+    if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1 ||
+        STRING_ELT(path, 0) == NA_STRING || TYPEOF(tags) != STRSXP ||
+        XLENGTH(tags) == 0 || TYPEOF(n_max) != REALSXP ||
+        XLENGTH(n_max) != 1 || ISNA(REAL(n_max)[0]) || REAL(n_max)[0] < 0)
+        Rf_error("Invalid experimental MARCXML filtering inputs.");
+    filter_screen_state *s = (filter_screen_state *)calloc(1, sizeof(*s));
+    if (!s) Rf_error("Could not allocate MARCXML screening state.");
+    s->n_max = REAL(n_max)[0];
+    s->n_tags = XLENGTH(tags);
+    s->tags = (char **)calloc((size_t)s->n_tags, sizeof(char *));
+    s->plan = (marcxml_recovery_plan_state *)calloc(1, sizeof(*s->plan));
+    if (!s->tags || !s->plan) {
+        filter_screen_free(s);
+        Rf_error("Could not allocate experimental MARCXML screening plan.");
+    }
+    s->plan->path = copy_c_string(Rf_translateCharUTF8(STRING_ELT(path, 0)));
+    if (!s->plan->path) {
+        filter_screen_free(s);
+        Rf_error("Could not allocate MARCXML input path.");
+    }
+    s->plan->mode = MARCXML_PLAN_READ;
+    for (R_xlen_t i = 0; i < s->n_tags; ++i) {
+        if (STRING_ELT(tags, i) == NA_STRING) {
+            filter_screen_free(s);
+            Rf_error("A screening tag cannot be missing.");
+        }
+        s->tags[i] = copy_c_string(Rf_translateCharUTF8(STRING_ELT(tags, i)));
+        if (!s->tags[i]) {
+            filter_screen_free(s);
+            Rf_error("Could not allocate MARCXML tag matcher.");
+        }
+    }
+    int options = XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING;
+    s->reader = xmlReaderForFile(s->plan->path, NULL, options);
+    if (!s->reader) {
+        filter_screen_free(s);
+        Rf_error("Could not open native MARCXML screening input.");
+    }
+    xmlTextReaderSetStructuredErrorHandler(s->reader, quiet_error, NULL);
+    s->rc = xmlTextReaderRead(s->reader);
+    SEXP ext = PROTECT(R_MakeExternalPtr(s, filter_screen_tag(), R_NilValue));
+    R_RegisterCFinalizerEx(ext, filter_screen_finalizer, TRUE);
+    UNPROTECT(1);
+    return ext;
+}
+
+/* Each screened source record is validated but only requested tags' values
+ * are copied into R; the callback is invoked once per batch in R. */
+SEXP attribute_visible C_marcxml_filter_screen_next(SEXP ext, SEXP maximum) {
+    filter_screen_state *s = filter_screen_get(ext);
+    if (TYPEOF(maximum) != INTSXP || XLENGTH(maximum) != 1 ||
+        INTEGER(maximum)[0] == NA_INTEGER || INTEGER(maximum)[0] <= 0)
+        Rf_error("Invalid experimental MARCXML screening batch size.");
+    if (s->pending) Rf_error("Apply screening decisions before requesting another batch.");
+    if (s->done) return R_NilValue;
+    R_xlen_t limit = INTEGER(maximum)[0];
+    filter_screen_clear_rows(s);
+    s->n_pending = 0;
+
+    while (s->rc == 1 && s->n_pending < limit) {
+        int type = xmlTextReaderNodeType(s->reader);
+        int depth = xmlTextReaderDepth(s->reader);
+        int is_record = 0;
+        if (type == XML_READER_TYPE_DOCUMENT_TYPE)
+            Rf_error("DTD is not supported by the native MARCXML screening path.");
+        if (type == XML_READER_TYPE_ELEMENT && depth == 0) {
+            if (s->root_seen) Rf_error("Invalid repeated MARCXML root.");
+            s->root_seen = 1;
+            int ns = reader_namespace_kind(s->reader);
+            if (ns < 0) Rf_error("Unsupported MARCXML namespace during screening.");
+            s->plan->root_namespace_kind = ns;
+            if (reader_named(s->reader, "collection")) {
+                s->plan->input_kind = MARCXML_ROOT_COLLECTION;
+            } else if (reader_named(s->reader, "record")) {
+                s->plan->input_kind = MARCXML_ROOT_RECORD;
+                is_record = 1;
+            } else Rf_error("Expected a MARCXML collection or record.");
+        } else if (type == XML_READER_TYPE_ELEMENT && depth == 1 &&
+                   s->plan->input_kind == MARCXML_ROOT_COLLECTION) {
+            if (!reader_named(s->reader, "record") ||
+                reader_namespace_kind(s->reader) != s->plan->root_namespace_kind)
+                Rf_error("Unexpected child element or namespace during screening.");
+            is_record = 1;
+        }
+        if (is_record) {
+            if (s->plan->records_total >= INT_MAX)
+                Rf_error("MARCXML screening record ID exceeds integer capacity.");
+            ++s->plan->records_total;
+            R_xlen_t source_id = s->plan->records_total;
+            if (!R_FINITE(s->n_max) || (double)source_id <= s->n_max) {
+                xmlNodePtr node = xmlTextReaderExpand(s->reader);
+                R_xlen_t all_rows = 0;
+                if (!node || !count_record_node(node, &all_rows))
+                    Rf_error("Unsupported or invalid MARCXML record during native screening.");
+                ++s->plan->source_records_selected;
+                filter_screen_append_pending(s, (int)source_id, all_rows);
+                if (!filter_screen_extract_record(s, node, (int)source_id))
+                    Rf_error("Could not extract requested MARCXML screening fields.");
+            }
+            s->rc = xmlTextReaderNext(s->reader);
+            continue;
+        }
+        s->rc = xmlTextReaderRead(s->reader);
+    }
+    if (s->rc < 0) Rf_error("Invalid XML syntax during MARCXML screening.");
+    if (s->rc == 0) {
+        if (!s->root_seen) Rf_error("Missing MARCXML document root.");
+        s->done = 1;
+    }
+    if (s->n_pending == 0) return R_NilValue;
+    s->pending = 1;
+
+    const char *names_c[] = {"record_id", "field_type", "tag", "subfield_code",
+         "value", "field_order", "ind1", "ind2", "subfield_order"};
+    SEXP cols = PROTECT(Rf_allocVector(VECSXP, 9));
+    SEXP colnames = PROTECT(Rf_allocVector(STRSXP, 9));
+    for (int j = 0; j < 9; ++j) {
+        SET_STRING_ELT(colnames, j, Rf_mkChar(names_c[j]));
+        SET_VECTOR_ELT(cols, j,
+           Rf_allocVector(j == 0 || j == 5 || j == 8 ? INTSXP : STRSXP, s->n_rows));
+    }
+    Rf_setAttrib(cols, R_NamesSymbol, colnames);
+    for (R_xlen_t i = 0; i < s->n_rows; ++i) {
+        filter_screen_row *r = &s->rows[i];
+        INTEGER(VECTOR_ELT(cols, 0))[i] = r->record_id;
+        SET_STRING_ELT(VECTOR_ELT(cols, 1), i, utf8(r->field_type));
+        SET_STRING_ELT(VECTOR_ELT(cols, 2), i, utf8(r->tag));
+        SET_STRING_ELT(VECTOR_ELT(cols, 3), i,
+                       r->subfield_code ? utf8(r->subfield_code) : NA_STRING);
+        SET_STRING_ELT(VECTOR_ELT(cols, 4), i, utf8(r->value));
+        INTEGER(VECTOR_ELT(cols, 5))[i] = r->field_order;
+        SET_STRING_ELT(VECTOR_ELT(cols, 6), i, r->ind1 ? utf8(r->ind1) : NA_STRING);
+        SET_STRING_ELT(VECTOR_ELT(cols, 7), i, r->ind2 ? utf8(r->ind2) : NA_STRING);
+        INTEGER(VECTOR_ELT(cols, 8))[i] = r->subfield_order;
+    }
+    SEXP ids = PROTECT(Rf_allocVector(INTSXP, s->n_pending));
+    for (R_xlen_t i = 0; i < s->n_pending; ++i)
+        INTEGER(ids)[i] = s->pending_ids[i];
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
+    SEXP outnames = PROTECT(Rf_allocVector(STRSXP, 2));
+    SET_STRING_ELT(outnames, 0, Rf_mkChar("columns"));
+    SET_STRING_ELT(outnames, 1, Rf_mkChar("record_ids"));
+    SET_VECTOR_ELT(out, 0, cols);
+    SET_VECTOR_ELT(out, 1, ids);
+    Rf_setAttrib(out, R_NamesSymbol, outnames);
+    UNPROTECT(5);
+    filter_screen_clear_rows(s);
+    return out;
+}
+
+SEXP attribute_visible C_marcxml_filter_screen_apply(SEXP ext, SEXP keep) {
+    filter_screen_state *s = filter_screen_get(ext);
+    if (!s->pending) Rf_error("There are no pending MARCXML screening decisions.");
+    if (TYPEOF(keep) != LGLSXP || XLENGTH(keep) != s->n_pending)
+        Rf_error("One logical decision is required per source record.");
+    for (R_xlen_t i = 0; i < s->n_pending; ++i) {
+        if (LOGICAL(keep)[i] == NA_LOGICAL)
+            Rf_error("Missing MARCXML record-selection decision.");
+        if (LOGICAL(keep)[i] && !recovery_append_valid(
+                s->plan, s->pending_ids[i], s->pending_rows[i]))
+            Rf_error("Could not extend filtered MARCXML plan.");
+    }
+    s->pending = 0;
+    s->n_pending = 0;
+    return R_NilValue;
+}
+
+SEXP attribute_visible C_marcxml_filter_screen_finish(SEXP ext) {
+    filter_screen_state *s = filter_screen_get(ext);
+    if (!s->done || s->pending)
+        Rf_error("MARCXML screening must finish and apply all decisions first.");
+    if (s->reader) {
+        xmlFreeTextReader(s->reader);
+        s->reader = NULL;
+    }
+    s->plan->mode = MARCXML_PLAN_READ;
+    SEXP planext = PROTECT(
+        R_MakeExternalPtr(s->plan, recovery_plan_tag(), R_NilValue)
+    );
+    R_RegisterCFinalizerEx(planext, recovery_plan_finalizer, TRUE);
+    s->plan = NULL;  /* ownership transferred */
+    SEXP result = PROTECT(plan_result("supported", NULL, planext));
+    UNPROTECT(2);
+    return result;
+}
+
+SEXP attribute_visible C_marcxml_filter_screen_close(SEXP ext) {
+    if (TYPEOF(ext) != EXTPTRSXP || R_ExternalPtrTag(ext) != filter_screen_tag())
+        Rf_error("Invalid experimental MARCXML screening handle.");
+    filter_screen_finalizer(ext);
+    return R_NilValue;
+}
+
 static const R_CallMethodDef call_methods[] = {
+    {"C_marcxml_filter_screen_open", (DL_FUNC)&C_marcxml_filter_screen_open, 3},
+    {"C_marcxml_filter_screen_next", (DL_FUNC)&C_marcxml_filter_screen_next, 2},
+    {"C_marcxml_filter_screen_apply", (DL_FUNC)&C_marcxml_filter_screen_apply, 2},
+    {"C_marcxml_filter_screen_finish", (DL_FUNC)&C_marcxml_filter_screen_finish, 1},
+    {"C_marcxml_filter_screen_close", (DL_FUNC)&C_marcxml_filter_screen_close, 1},
     {"C_marcxml_plan_open", (DL_FUNC)&C_marcxml_plan_open, 3},
     {"C_marcxml_plan_info", (DL_FUNC)&C_marcxml_plan_info, 1},
     {"C_marcxml_plan_close", (DL_FUNC)&C_marcxml_plan_close, 1},
