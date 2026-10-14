@@ -296,107 +296,196 @@ infer the intended MARC hierarchy. Stale or renumberable occurrence coordinates
 can instead be warnings when `field_order` and `subfield_order` still define an
 unambiguous structure.
 
-# Performance evaluation for marcxmlr 0.3.1
+# Performance evaluation: archived benchmarks for `marcxmlr` 0.3.1
 
-The measurements below are the final benchmark set documented for `marcxmlr`
-0.3.1. They are **scale indicators, not performance guarantees**. Hardware,
-storage, R, libxml2, Arrow and input complexity all affect elapsed time and
-memory use.
+This section reports the **2 October 2026 benchmark evidence** for `marcxmlr`
+0.3.1. It evaluates concrete implementation choices: the package-specific C
+parser versus a retained R/`xml2` reference implementation; complete in-memory
+materialization versus batched Parquet conversion; process-level parallelism
+within one XML file versus across independent files; and MARCXML reconstruction
+from an Arrow Dataset. All measurements below come from the same frozen
+benchmark campaign. No measurements have been extrapolated to subsequent
+releases, including 0.4.0.
 
-## Benchmark data and environment
+The intended comparison is among **ways of producing or consuming the same
+canonical 11-column data**, not among alternative metadata models. The results
+show performance on the specified data and computer; they are not guaranteed
+throughput or memory limits on other systems.
 
-The evaluation used the public U.S. Government Publishing Office
+## Input data and experimental environment
+
+The inputs were drawn from the public U.S. Government Publishing Office (GPO)
 [All CGP Records MARCXML collection](https://github.com/usgpo/cataloging-records-all-cgp-marcxml).
+Three workloads were used:
 
-The main inputs were:
+| Workload | Input | Canonical rows | Purpose |
+|---|---:|---:|---|
+| Reference-parser subset | First 5,000 records of part 00 | 260,839 | Compare equivalent canonical outputs from the R/`xml2` reference and C parser |
+| Single file | Part 00, 40,000 records | 2,143,952 | In-memory reading, Parquet conversion, within-file workers, and Arrow-backed writing |
+| Multiple files | Parts 00–26, 27 files, 1,080,000 records | 67,672,396 | Conversion to Parquet with parallelism across files |
 
-* a 5,000-record prefix producing 260,839 canonical rows, used for the slower
-  reference-parser comparison;
-* one 40,000-record file producing 2,143,952 canonical rows; and
-* 27 files containing 1,080,000 records and 67,672,396 canonical rows.
+The 5,000-record subset is a **prefix**, not a random sample. Part 27 was
+excluded from the multi-file workload because it contains a malformed MARC data
+field without any subfield elements. The strict parser behavior was retained:
+the source was not silently repaired for benchmarking. Consequently, the
+multi-file results describe parts 00–26, not every file in the original GPO
+collection.
 
-The measurements were obtained with `marcxmlr` 0.3.1 under R 4.6.1 and Arrow
-25.0.1 on a Lenovo ThinkPad P50 with an Intel Core i7-6820HQ, four physical
-cores/eight hardware threads, 31.18 GiB RAM and a local 512 GB SSD. No server,
-cluster or GPU resources were used.
+Measurements were made on a **Lenovo ThinkPad P50** running Linux, with an
+**Intel Core i7-6820HQ** (four physical cores, eight hardware threads),
+**31.18 GiB RAM**, and a **local 512 GB SSD**. The software environment used
+**`marcxmlr` 0.3.1**, **R 4.6.1**, and **Arrow 25.0.1**. The benchmark runner,
+input-file checksums, software and environment information, individual
+measurements, and verification outputs were retained as reproducibility
+evidence. No server, cluster, or GPU was involved.
 
-Principal sequential and writer timings use five measured runs and are reported
-as medians with interquartile ranges (IQR). Parallel timings use three measured
-runs. Parquet conversion used `batch_records = 5000` and Snappy compression.
-Peak resident set size (RSS) was measured in fresh R processes for the
-single-process workflows.
+## Measurement and verification protocol
 
-## Principal sequential results
+Elapsed times are **wall-clock elapsed seconds**. The parser comparison and
+principal sequential and writer workflows used **five measured repetitions**;
+parallel worker comparisons used **three**. Untimed warm-up runs preceded
+cases for which setup or storage effects were material. Tables give the
+**median**; the sequential table also gives the **interquartile range (IQR)**
+to show variability within the recorded repetitions. Operating-system file
+caches were **not flushed** between repetitions. These are therefore not
+controlled cold-cache disk-read measurements.
 
-| Workflow | Input | Median elapsed (s) | IQR (s) | Peak RSS (MiB) |
-|---|---:|---:|---:|---:|
-| Reference R/`xml2` implementation | 5,000 records / 260,839 rows | 56.140 | 0.529 | not measured |
-| Compiled C parser | 5,000 records / 260,839 rows | 0.980 | 0.012 | not measured |
-| `read_marcxml()` | 40,000 records / 2,143,952 rows | 7.106 | 0.116 | 336.0 |
-| `marcxml_to_parquet()` | 40,000 records / 2,143,952 rows | 9.374 | 0.015 | 277.8 |
-| `write_marcxml()` from Arrow | 40,000 records / 2,143,952 rows | 14.493 | 0.109 | 588.2 |
+Parquet conversion used **`batch_records = 5000`** and **Snappy compression**.
+The parallel cases used **one, two, and four workers**, no more than the four
+physical CPU cores of the benchmark machine. Timings include the work performed
+by the named end-to-end workflow, not merely the isolated XML traversal phase.
 
-On the 5,000-record subset, the compiled parser was 57.3 times faster than the
-retained R/`xml2` reference implementation, with exact equality of the
-canonical results verified before timings were accepted. This comparison is
-between two implementations of the same canonical transformation, not between
-different outputs.
+For single-process in-memory reading, Parquet conversion, and Arrow-backed
+writing, **peak resident set size (RSS)** was measured in fresh R processes
+using GNU `/usr/bin/time -v`. Three measurements were summarized by their
+median. RSS figures were **not** reported for the parallel pools: measuring the
+parent R process alone would understate aggregate worker memory, and summing
+per-process peaks would not necessarily describe a simultaneous peak. The
+published evidence therefore does **not** establish peak RAM needs for the
+multi-worker cases.
 
-On the full 40,000-record file, sequential Parquet conversion took about 32%
-longer than the in-memory read while its measured peak RSS was about 17% lower.
-The comparison should not be treated as a simple ranking: Parquet also produces
-a persistent disk-backed representation and, more importantly, changes how much
-expanded canonical data needs to be materialized at one time.
+Correctness was checked independently of speed. The retained R/`xml2` reference
+and compiled parser produced **exactly equal canonical tables** for the
+5,000-record subset before their timings were accepted. For the writer test,
+the output MARCXML was read back into the canonical representation and checked
+for **exact equality of the represented canonical data**. This is a check of
+MARC structure and values within the package's contract, **not** a claim of
+byte-for-byte XML identity. The frozen verification results accompany the raw
+measurements.
 
-The Arrow-backed writer's peak RSS was higher than either single-file ingestion
-workflow in this benchmark. Its scaling advantage is therefore not lower peak
-RSS in this case; it is that the complete Dataset does not have to be collected
-into a single R tibble before serialization.
+## Sequential parsing, storage, and writing
 
-## Parallel results
+| Workflow | Workload | Median elapsed (s) | IQR (s) | Median peak RSS (MiB) |
+|---|---|---:|---:|---:|
+| Reference implementation in R/`xml2` | 5,000 records | 56.140 | 0.529 | Not measured |
+| Package-specific compiled C parser | 5,000 records | 0.980 | 0.012 | Not measured |
+| `read_marcxml()` | 40,000 records | 7.106 | 0.116 | 336.0 |
+| `marcxml_to_parquet()`, one worker | 40,000 records | 9.374 | 0.015 | 277.8 |
+| `write_marcxml()` from Arrow | 40,000 records | 14.493 | 0.109 | 588.2 |
 
-For one 40,000-record file, Parquet conversion took:
+**Compiled parser versus reference implementation.** On the 5,000-record
+prefix, the dedicated C parser took 0.980 s rather than 56.140 s: a
+**57.3-fold reduction in elapsed time** for two implementations producing an
+exactly equal canonical result. This comparison isolates an important design
+choice: MARC traversal, output sizing, preallocation, and occurrence bookkeeping
+are performed together in a compiled operation rather than by repeated
+high-level XML queries and R-level reconstruction. The reference is a
+**specific retained R/`xml2` implementation**, not a claim that `marcxmlr` is
+57 times faster than every possible use of `xml2` or than other MARC libraries.
 
-| Workers | Elapsed time (s) | Speedup vs 1 worker |
-|---:|---:|---:|
-| 1 | 9.374 | 1.00 |
-| 2 | 19.858 | 0.47 |
-| 4 | 18.849 | 0.50 |
+**In-memory reading versus Parquet conversion.** On part 00, `read_marcxml()`
+constructed the 2,143,952-row canonical table in 7.106 s. Sequential
+`marcxml_to_parquet()` took 9.374 s, approximately **32% longer**, while writing
+a persistent Parquet representation. Its measured peak RSS was 277.8 MiB
+versus 336.0 MiB for the in-memory read, approximately **17% lower**. These
+workflows do not have identical outputs: one returns a complete R tibble, while
+the other produces disk-backed Parquet parts. More importantly, the latter
+materializes only complete-record batches at a time, whereas the former keeps
+the entire expanded table in memory. The small RSS difference on this
+40,000-record case should **not** be extrapolated as a constant percentage
+saving for other catalogue sizes.
 
-The additional workers were slower because the task left the optimized direct
-sequential path and paid worker/coordination costs.
+**Arrow-backed MARCXML writer.** Starting from the 40,000-record canonical
+Arrow Dataset, `write_marcxml()` produced MARCXML in 14.493 s with structural
+checking enabled. Its measured peak RSS of 588.2 MiB was **higher** than for
+either ingestion workflow in this test. The rationale for accepting an Arrow
+Dataset is consequently **not** that the measured writer used less memory on
+part 00. It is that complete records can be scanned, checked, and written
+incrementally without first collecting the entire Dataset into one R tibble.
+The test verifies structural reconstruction, not preservation of XML whitespace,
+namespace-prefix spelling, or other serialization details outside the
+canonical representation.
 
-For the 27-file corpus, conversion took:
+## Parallelism: the input layout matters
 
-| Workers | Elapsed time (s) | Speedup vs 1 worker |
-|---:|---:|---:|
-| 1 | 290.139 | 1.00 |
-| 2 | 192.681 | 1.51 |
-| 4 | 118.629 | 2.45 |
+The benchmark distinguishes two execution regimes. For **one XML file**, worker
+parallelism partitions complete records into tasks and uses a different path
+from the optimized direct sequential reader. For **multiple XML files**, each
+worker can process a complete file with that optimized sequential reader and
+write its own Parquet parts. The logical canonical schema is unchanged in both
+cases, but process startup, task preparation, coordination, and storage
+contention differ.
 
-With four workers, 1,080,000 MARC records producing 67,672,396 canonical rows
-were converted to Parquet in 118.629 seconds, just under two minutes, on the
-single laptop-class machine described above.
+| Input layout | Workers | Median elapsed (s) | Speedup relative to one worker |
+|---|---:|---:|---:|
+| One file: 40,000 records | 1 | 9.374 | 1.00 |
+| One file: 40,000 records | 2 | 19.858 | 0.47 |
+| One file: 40,000 records | 4 | 18.849 | 0.50 |
+| 27 files: 1,080,000 records | 1 | 290.139 | 1.00 |
+| 27 files: 1,080,000 records | 2 | 192.681 | 1.51 |
+| 27 files: 1,080,000 records | 4 | 118.629 | 2.45 |
 
-These results support the package's separation between logical representation
-and execution strategy: the canonical model remains unchanged, while compiled
-parsing, bounded Parquet materialization and parallelism are applied where they
-match the physical problem.
+For **one file**, additional workers increased rather than reduced elapsed
+time. Two workers took 19.858 s and four took 18.849 s, compared with 9.374 s
+sequentially. The benchmark is consistent with the cost of abandoning the
+direct reader path and coordinating smaller record tasks exceeding any benefit
+from concurrent parsing. These observations should not be presented as a
+universal statement that within-file parallelism is always slower.
 
-## Reproducible performance comparisons
+For **27 independent files**, by contrast, four workers reduced elapsed time
+from 290.139 s to 118.629 s, a **2.45-fold speedup** relative to the
+one-worker workflow. At that setting the 27 files, containing **1,080,000
+bibliographic records and 67,672,396 canonical rows**, were converted to
+Parquet in just under **two minutes** on the specified laptop. The gain was
+substantial but below ideal fourfold scaling: process overhead, I/O,
+compression, and resource contention can all constrain concurrency. The
+measurements do not disentangle the contributions of those potential limits.
 
-A meaningful benchmark comparison should record at least:
+The supported practical conclusion is therefore narrower and more useful than
+"more workers are faster": **use the optimized sequential path as a sensible
+default for a single file; consider file-level workers when the catalogue is
+already divided into substantial independent MARCXML files**. The optimal
+worker count remains workload- and machine-dependent.
 
-* the exact `marcxmlr` version or Git commit;
-* R version;
-* libxml2 version;
-* Arrow version where relevant;
-* operating system;
-* CPU;
-* storage;
-* exact input files or checksums; and
-* worker count.
+## Interpretation, limits, and archived evidence
 
-The implementation principle remains the same as in the main README: **preserve
-the MARC structure first, then optimize the repeated work without changing the
-canonical representation**.
+The figures above support four observations on the tested GPO workloads:
+
+1. MARC-specific compiled parsing substantially reduced the cost of constructing
+   the canonical table relative to the retained reference implementation.
+2. Batched Parquet conversion produced a persistent canonical Dataset with
+   bounded expanded-table materialization and a modest additional elapsed cost
+   in the single-file test.
+3. Parallelism helped across substantial input files but not within the tested
+   single file.
+4. Arrow-backed reconstruction avoided collecting a whole Dataset before
+   writing, without showing a lower measured peak RSS on the tested workload.
+
+The experiment was conducted on **one Linux workstation** with a specific
+public corpus and fixed software versions. Record complexity, disk behavior,
+cache state, compression, memory pressure, Arrow and `libxml2` versions, and
+CPU topology can all change the timings. In particular, the benchmark cannot
+establish an absolute upper catalogue size, a universal memory bound, a
+cross-platform speed ranking, or a quantitative speedup for `marcxmlr` 0.4.0.
+It also does not compare against all other MARCXML parsers.
+
+The historical benchmark evidence is **frozen rather than regenerated for this
+technical note**. The recorded results include individual timing observations,
+peak-RSS observations, exact-equality verification, and derived summaries. The
+reproducibility materials also document software settings, original input files
+and hashes, and the benchmark runner. The input corpus and runner are referenced
+at [Zenodo, DOI: 10.5281/zenodo.23160503](https://doi.org/10.5281/zenodo.23160503).
+For audit purposes, the key distinction is between **recorded observations**
+and values derived from them (medians, IQRs, percentage changes, and speedups).
+No fresh runs, new hardware comparisons, or reconstructed measurements were
+used for this revision.
