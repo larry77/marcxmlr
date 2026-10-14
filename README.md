@@ -3,6 +3,8 @@
 [![R-CMD-check](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml)
 [![CRAN status](https://www.r-pkg.org/badges/version/marcxmlr)](https://CRAN.R-project.org/package=marcxmlr)
 
+**Convert MARCXML into a reusable, structurally faithful table for analysis with the tools you choose.**
+
 # MARC 21 and MARCXML
 
 [MARC 21](https://www.loc.gov/marc/) stands for **Machine-Readable Cataloging**
@@ -14,10 +16,18 @@ The examples in this README use bibliographic MARC 21.
 MARC 21. It expresses the same logical record structure through XML elements and
 attributes rather than through the compact traditional MARC serialization.
 
-`marcxmlr` is an R package for bringing MARCXML into ordinary analytical
-workflows without first discarding the structure that makes MARC meaningful.
-The central idea of the package is not simply XML parsing: it is a documented,
-analyst-friendly rectangular representation of MARC structure.
+`marcxmlr` converts MARCXML into a stable, documented, 11-column canonical
+representation that preserves the represented MARC structure. Rather than
+producing a task-specific extraction, it creates a reusable long-form table
+that can be queried repeatedly as analytical questions evolve.
+
+The package is implemented in R and `read_marcxml()` returns a tibble, but the
+canonical data model is independent of R and `dplyr`. The examples use `dplyr`
+for convenience: the same columns can be analysed with `data.table` and other
+R tools, or stored in interoperable formats such as Parquet for use with Python,
+Julia, Rust, SQL engines and other environments.
+
+
 
 # Installation
 
@@ -173,9 +183,11 @@ ordinary tabular data. Four requirements guide the design of `marcxmlr`:
    formatting of the original XML file; see [the discussion of structural preservation](#what-semantic-preservation-means).
 2. **General-purpose tabular interoperability.** Use one rectangular table with
    a fixed set of columns and ordinary scalar values, without list columns,
-   nested objects, specially encoded cells or auxiliary tables. The result can
-   be inspected using familiar tools, from spreadsheets and CSV readers to R,
-   Python, SQL and Parquet systems (subject to each tool's scale limits).
+   nested objects, specially encoded cells or auxiliary tables. The documented
+   schema is tool-agnostic: it can be analysed using `dplyr`, `data.table`,
+   other R tools, or software in Python, Julia, Rust and SQL environments via
+   interoperable tabular formats, including Parquet (subject to each tool's
+   capabilities and scale limits).
 3. **MARC-native queryability.** Keep tags, indicators and subfield codes
    directly accessible as columns. Someone familiar with [MARC 21 content
    designation](https://www.loc.gov/marc/bibliographic/) can locate `245$a` or
@@ -824,9 +836,9 @@ interpretation. It does **not** attempt to:
 * automatically map a catalogue to another metadata model; or
 * replace complete MARC 21 content or MARCXML schema validation.
 
-Its job is narrower: represent supported MARCXML faithfully enough that later
-selection, reshaping, validation, mapping and analysis are explicit choices made
-with ordinary R tools.
+Its job is narrower: make supported MARCXML available through a stable,
+structurally faithful canonical table. Subsequent selection, reshaping, mapping
+and analysis are choices made with general-purpose tools in R or elsewhere.
 
 For further reading:
 
