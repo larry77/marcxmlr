@@ -47,3 +47,73 @@ The exact 11-column canonical output agrees across A, C1 and C4 for three test f
 5. No filter supplied: **use the existing native reader/Parquet paths completely unchanged**, with no additional screening or dispatch overhead inside their record-processing loops.
 
 C4 is a proof of concept; no claim of production-grade portability or universal performance advantage.
+
+## Native C4 materialization prototype (after 2026-10-15 checkpoint)
+
+The additional experimental `C_marcxml_offset_parse_batch()` native entry point
+receives selected source byte ranges. It seeks/reads the original bytes in C,
+builds **one bounded in-memory XML collection per batch** (no temporary XML
+file), and uses the established `count_record_node()` and
+`write_record_node()` native functions for the selected records only.
+
+The experimental R entry points are:
+
+- `marcxmlr:::.prototype_c4_native_read_offsets(file, offsets)`
+- `marcxmlr:::.prototype_c4_native_to_parquet_offsets(file, offsets, output_dir)`
+
+Both accept the data.frame produced by the Expat `record_offset_index` helper.
+These functions intentionally do **not** alter `read_marcxml()` or
+`marcxml_to_parquet()`; no-filter calls use their existing native paths.
+
+To run **both the old C4 stage profile and a controlled C1 / old C4 /
+native C4 comparison in a single experiment**, install this experimental
+package snapshot (`R CMD INSTALL .`), then run:
+
+```sh
+Rscript tools/c4-offset/profile-and-benchmark-c4-native.R \
+  ~/marcxmlr-repro/benchmark-inputs/cataloging-records-all-cgp-XML-00.xml 3
+```
+
+Check `correctness.csv` first. `raw.csv` contains both R-based extraction and
+native stage timings; `summary.csv` contains median totals. The native stage
+separates native file IO, libxml2 tree parse, MARC counting and canonical writing
+(Linux monotonic clock; on other platforms stage readings may be zero).
+
+### Prototype restrictions
+
+- The **separate** Expat index helper is still used for screening; integration
+  of screening into the installed package is not part of this experiment.
+- Uncompressed UTF-8, DTD-free MARCXML with standard namespace (default or
+  `marc` prefix), as in the tested GPO inputs. Arbitrary inherited prefixes,
+  entity declarations, encodings and compressed files require more work.
+- Record offsets must be ordered and non-overlapping and are expressed as
+  zero-based byte positions. Output record IDs are consecutive from 1.
+- Parquet output uses bounded canonical batches, but the complete **offset
+  index** is currently kept in R memory; further streaming work is needed for
+  huge numbers of selected records.
+- The native batch builds a bounded in-memory libxml2 tree; there is no
+  assertion that this will outperform C1 for permissive filters. Compare it.
+- No peak RSS comparison is made by the supplied benchmark.
+
+## C4 native residual profiling (separate follow-up experiment)
+
+To locate the permissive-filter penalty, a profiling-only extension to the
+experimental native reader separates canonical vector allocation, per-cell NA
+initialization, canonical row writing, and XML document cleanup. The R wrapper
+also times native `.Call`, tibble construction, batch consumption, final batch
+binding, and unclassified wrapper work. **The public unfiltered functions are
+not altered.**
+
+Run after `R CMD INSTALL .`:
+
+```sh
+Rscript tools/c4-offset/profile-c4-native-residual.R \
+  ~/marcxmlr-repro/benchmark-inputs/cataloging-records-all-cgp-XML-00.xml 5 650
+```
+
+Default is five runs of the permissive `650` case. Pass `650,710,856` as the
+third argument to profile all three cases. The script checks **exact canonical
+equality** before timing, then writes `correctness.csv`, `raw.csv`,
+`summary.csv` and `environment.txt` under `~/marcxmlr-c4-residual-<timestamp>/`.
+This diagnostic experiment does not measure peak memory or Parquet output.
+Per-phase medians are not strictly additive, and profiling itself has overhead.
