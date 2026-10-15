@@ -84,6 +84,30 @@ if [ $status -ne 0 ]; then
   exit 1
 fi
 
+# Optional Expat screening backend. Failure must never prevent installation
+# or change unfiltered parsing. The filtered API explains if it is unavailable.
+EXPAT_CFLAGS=""
+EXPAT_LIBS="-lexpat"
+if command -v pkg-config >/dev/null 2>&1; then
+  EXPAT_CFLAGS=`pkg-config --cflags expat 2>/dev/null`
+  EXPAT_LIBS=`pkg-config --libs expat 2>/dev/null`
+  if [ -z "$EXPAT_LIBS" ]; then EXPAT_LIBS="-lexpat"; fi
+fi
+cat > conftest.c <<'EOF_EXPAT'
+#include <expat.h>
+int main(void) { XML_Parser p = XML_ParserCreateNS("UTF-8", '|'); if (!p) return 1; XML_ParserFree(p); return 0; }
+EOF_EXPAT
+${CC} ${CPPFLAGS} ${EXPAT_CFLAGS} ${CFLAGS} conftest.c ${EXPAT_LIBS} -o conftest >configure-expat.log 2>&1
+expat_status=$?
+rm -f conftest.c conftest conftest.exe
+if [ "$expat_status" -eq 0 ]; then
+  PKG_CFLAGS="$PKG_CFLAGS $EXPAT_CFLAGS -DMARCXMLR_HAS_EXPAT"
+  PKG_LIBS="$PKG_LIBS $EXPAT_LIBS"
+  echo "Expat found: offset filtering enabled."
+else
+  echo "Expat unavailable: package installs normally, offset filtering disabled."
+fi
+
 # Escape characters meaningful to sed replacement strings.
 escape_sed() {
   printf '%s' "$1" | sed 's/[\\&|]/\\&/g'

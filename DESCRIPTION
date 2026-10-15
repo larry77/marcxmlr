@@ -41,6 +41,6 @@ Suggests:
     XML
 VignetteBuilder: knitr
 Config/testthat/edition: 3
-SystemRequirements: libxml2 (>= 2.9.0)
+SystemRequirements: libxml2 (>= 2.9.0), Expat (optional, for record filtering)
 NeedsCompilation: yes
 Config/roxygen2/version: 8.1.0

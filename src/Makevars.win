@@ -16,6 +16,14 @@ PKG_LIBS = -L$(RWINLIB)/lib$(subst gcc,,$(COMPILED_BY))$(R_ARCH) -L$(RWINLIB)/li
 	-lxml2 -liconv -lz -lws2_32
 endif
 
+# Expat is optional, and the unfiltered MARCXML engine must still build
+# on Rtools installations that do not provide expat headers and libraries.
+EXPAT_LIBS := $(shell $(PKG_CONFIG) --libs expat 2>/dev/null)
+ifneq ($(strip $(EXPAT_LIBS)),)
+PKG_CPPFLAGS += $(shell $(PKG_CONFIG) --cflags expat) -DMARCXMLR_HAS_EXPAT
+PKG_LIBS += $(EXPAT_LIBS)
+endif
+
 all: $(SHLIB)
 
 $(OBJECTS): $(RWINLIB)

@@ -110,6 +110,13 @@
 #'   fatal. Recovery mode is currently sequential.
 #' @param error_report Path for the CSV diagnostic report used when
 #'   `on_marc_error = "skip"`. The file must not already exist.
+#' @param filter_tag Optional three-digit MARC field tag. When supplied,
+#'   select records containing the tag using a native Expat offset index.
+#'   Filtered records receive consecutive `record_id` values. Requires
+#'   uncompressed UTF-8 XML without a DTD.
+#' @param filter_subfield Optional one-character subfield code to require
+#'   within `filter_tag`.
+#' @param filter_equals Optional exact text value for `filter_subfield`.
 #'
 #' @return A tibble with columns `record_id`, `field_type`, `tag`,
 #'   `subfield_code`, `value`, `field_order`, `field_occurrence`, `ind1`,
@@ -168,7 +175,10 @@ read_marcxml <- function(
   workers = 1L,
   chunk_records = NULL,
   on_marc_error = c("stop", "skip"),
-  error_report = NULL
+  error_report = NULL,
+  filter_tag = NULL,
+  filter_subfield = NULL,
+  filter_equals = NULL
 ) {
   valid_file <- is.character(file) &&
     length(file) == 1L &&
@@ -189,6 +199,19 @@ read_marcxml <- function(
   workers <- .validate_workers(workers)
   chunk_records <- .validate_chunk_records(chunk_records)
   on_marc_error <- match.arg(on_marc_error)
+  filtered <- .validate_c4_filter(
+    filter_tag, filter_subfield, filter_equals, chunk_records,
+    on_marc_error, error_report
+  )
+  if (filtered) {
+    if (workers > 1L) {
+      stop("Parallel filtering requires at least two MARCXML input files; ",
+           "`read_marcxml()` accepts one file and therefore requires `workers = 1L`.",
+           call. = FALSE)
+    }
+    return(.c4_read_filtered(file, n_max, filter_tag,
+                             filter_subfield, filter_equals))
+  }
 
   if (identical(on_marc_error, "skip")) {
     if (workers != 1L) {

@@ -13,7 +13,10 @@ marcxml_to_parquet(
   compression = "snappy",
   verbose = TRUE,
   on_marc_error = c("stop", "skip"),
-  error_report = NULL
+  error_report = NULL,
+  filter_tag = NULL,
+  filter_subfield = NULL,
+  filter_equals = NULL
 )
 }
 \arguments{
@@ -49,6 +52,14 @@ fatal. Recovery mode currently supports one input file with \code{workers = 1}.}
 
 \item{error_report}{Path for the CSV diagnostic report used when
 \code{on_marc_error = "skip"}. The file must not already exist.}
+
+\item{filter_tag}{Optional three-digit MARC field tag used for native
+record selection before materialization. Requires uncompressed UTF-8
+MARCXML without DTD; filtered record IDs are consecutive.}
+
+\item{filter_subfield}{Optional one-character subfield code within the tag.}
+
+\item{filter_equals}{Optional exact subfield text to match.}
 }
 \value{
 Invisibly, a tibble with one row per resolved input file containing

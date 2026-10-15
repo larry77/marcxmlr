@@ -406,6 +406,11 @@
 #'   fatal. Recovery mode currently supports one input file with `workers = 1`.
 #' @param error_report Path for the CSV diagnostic report used when
 #'   `on_marc_error = "skip"`. The file must not already exist.
+#' @param filter_tag Optional three-digit MARC field tag. Filters records
+#'   before native materialization using byte offsets. Requires uncompressed
+#'   UTF-8 XML without DTD.
+#' @param filter_subfield Optional one-character subfield code within the tag.
+#' @param filter_equals Optional exact value of the specified subfield.
 #'
 #' @return Invisibly, a tibble with one row per resolved input file containing
 #'   the normalized input and output paths, record and row counts, number of
@@ -491,7 +496,10 @@ marcxml_to_parquet <- function(
   compression = "snappy",
   verbose = TRUE,
   on_marc_error = c("stop", "skip"),
-  error_report = NULL
+  error_report = NULL,
+  filter_tag = NULL,
+  filter_subfield = NULL,
+  filter_equals = NULL
 ) {
   input_files <- .resolve_marcxml_files(file)
 
@@ -530,6 +538,16 @@ marcxml_to_parquet <- function(
   }
 
   on_marc_error <- match.arg(on_marc_error)
+  filtered <- .validate_c4_filter(
+    filter_tag, filter_subfield, filter_equals, chunk_records,
+    on_marc_error, error_report
+  )
+  if (filtered) {
+    return(.c4_filtered_to_parquet(
+      input_files, output_dir, batch_records, workers, compression, verbose,
+      filter_tag, filter_subfield, filter_equals
+    ))
+  }
 
   if (identical(on_marc_error, "skip")) {
     if (length(input_files) != 1L) {

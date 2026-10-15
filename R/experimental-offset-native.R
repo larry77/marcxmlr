@@ -2,7 +2,7 @@
 # Intentionally separate from exported read_marcxml()/marcxml_to_parquet().
 # The offset index is currently produced by tools/c4-offset/record_offset_index.c.
 
-.prototype_c4_visit_offsets <- function(file, offsets, consume,
+.c4_visit_offsets <- function(file, offsets, consume,
                                         batch_records = 500L,
                                         batch_bytes = 16 * 1024^2,
                                         .profile = FALSE,
@@ -93,6 +93,8 @@
   invisible(list(profile = profile, r_profile = r_profile,
                  batches = batches, records = n))
 }
+
+.prototype_c4_visit_offsets <- .c4_visit_offsets
 
 .prototype_c4_native_read_offsets <- function(file, offsets,
                                               batch_records = 500L,

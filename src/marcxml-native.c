@@ -4945,7 +4945,11 @@ SEXP attribute_visible C_marcxml_c4_bind_parts(SEXP parts) {
 }
 
 
+extern SEXP C_marcxml_offset_index(SEXP path, SEXP tag,
+                                   SEXP subfield, SEXP equals);
+
 static const R_CallMethodDef call_methods[] = {
+    {"C_marcxml_offset_index", (DL_FUNC)&C_marcxml_offset_index, 4},
     {"C_marcxml_offset_parse_batch", (DL_FUNC)&C_marcxml_offset_parse_batch, 4},
     {"C_marcxml_offset_parse_batch_stream", (DL_FUNC)&C_marcxml_offset_parse_batch_stream, 4},
     {"C_marcxml_c4_bind_parts", (DL_FUNC)&C_marcxml_c4_bind_parts, 1},
