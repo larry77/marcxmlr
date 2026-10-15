@@ -14,6 +14,21 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__)
+#include <time.h>
+#endif
+
+/* Experimental profiling only: monotonic wall time on Linux. The public
+ * non-filtered parser never calls this function. */
+static double filter_profile_clock(void) {
+#if defined(__linux__) && defined(CLOCK_MONOTONIC)
+    struct timespec t;
+    if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return 0.0;
+    return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
+#else
+    return 0.0; /* profiling is Linux-only */
+#endif
+}
 
 /* MARC-specific native engine using direct libxml2 traversal, count-then-
  * allocate output, and hashed occurrence counters. No xml2 external-pointer
@@ -847,6 +862,7 @@ typedef struct {
     char **skipped_control_number;
     char **skipped_record_xml;
     R_xlen_t skipped_capacity;
+    int profile_filter; /* opt-in experimental filter only */
 } marcxml_recovery_plan_state;
 
 static int recovery_foreign_namespace(
@@ -1534,6 +1550,8 @@ typedef struct {
     int root_seen;
     int failed;
     xmlChar *text;
+    int profile_filter;
+    double profile_next_s, profile_validate_s, profile_write_s;
 } recovery_batch_state;
 
 static SEXP recovery_batch_tag(void) {
@@ -1587,6 +1605,7 @@ SEXP attribute_visible C_marcxml_recovery_reader_open(SEXP plan_ext) {
     state->input_kind = plan->input_kind;
     state->root_namespace_kind = plan->root_namespace_kind;
     state->records_valid = plan->records_valid;
+    state->profile_filter = plan->profile_filter;
     if (!state->path) {
         recovery_batch_state_free(state);
         Rf_error("Could not copy native MARCXML recovery plan path.");
@@ -1636,6 +1655,7 @@ SEXP attribute_visible C_marcxml_recovery_reader_next(SEXP ext, SEXP maximum) {
     }
 
     if (state->next_valid >= state->records_valid) return R_NilValue;
+    double profile_next_start = state->profile_filter ? filter_profile_clock() : 0.0;
 
     R_xlen_t remaining = state->records_valid - state->next_valid;
     R_xlen_t record_limit = (R_xlen_t)INTEGER(maximum)[0];
@@ -1710,6 +1730,7 @@ SEXP attribute_visible C_marcxml_recovery_reader_next(SEXP ext, SEXP maximum) {
                     recovery_batch_fail(state, "MARCXML standalone record no longer matches the recovery plan.");
                 }
 
+                double profile_validate_start = state->profile_filter ? filter_profile_clock() : 0.0;
                 xmlNodePtr node = xmlTextReaderExpand(state->reader);
                 R_xlen_t expected_rows = state->rows_per_record[state->next_valid];
                 R_xlen_t actual_rows = 0;
@@ -1717,8 +1738,13 @@ SEXP attribute_visible C_marcxml_recovery_reader_next(SEXP ext, SEXP maximum) {
                     recovery_batch_fail(state, "MARCXML record no longer matches the native recovery plan.");
                 }
 
+                if (state->profile_filter)
+                    state->profile_validate_s += filter_profile_clock() - profile_validate_start;
                 R_xlen_t before = output_row;
+                double profile_write_start = state->profile_filter ? filter_profile_clock() : 0.0;
                 write_record_node(node, 1, cols, &output_row, fields, subs, cap, &state->text);
+                if (state->profile_filter)
+                    state->profile_write_s += filter_profile_clock() - profile_write_start;
                 if (output_row - before != expected_rows) {
                     recovery_batch_fail(state, "Native MARCXML recovery writer produced an unexpected row count.");
                 }
@@ -1746,6 +1772,7 @@ SEXP attribute_visible C_marcxml_recovery_reader_next(SEXP ext, SEXP maximum) {
                 recovery_batch_fail(state, "MARCXML input no longer matches the native recovery plan.");
             }
 
+            double profile_validate_start = state->profile_filter ? filter_profile_clock() : 0.0;
             xmlNodePtr node = xmlTextReaderExpand(state->reader);
             R_xlen_t expected_rows = state->rows_per_record[state->next_valid];
             R_xlen_t actual_rows = 0;
@@ -1756,11 +1783,16 @@ SEXP attribute_visible C_marcxml_recovery_reader_next(SEXP ext, SEXP maximum) {
                 recovery_batch_fail(state, "MARCXML record_id exceeds integer capacity.");
             }
 
+            if (state->profile_filter)
+                state->profile_validate_s += filter_profile_clock() - profile_validate_start;
             R_xlen_t before = output_row;
+            double profile_write_start = state->profile_filter ? filter_profile_clock() : 0.0;
             write_record_node(
                 node, (int)state->source_seen, cols, &output_row,
                 fields, subs, cap, &state->text
             );
+            if (state->profile_filter)
+                state->profile_write_s += filter_profile_clock() - profile_write_start;
             if (output_row - before != expected_rows) {
                 recovery_batch_fail(state, "Native MARCXML recovery writer produced an unexpected row count.");
             }
@@ -1798,7 +1830,28 @@ SEXP attribute_visible C_marcxml_recovery_reader_next(SEXP ext, SEXP maximum) {
     Rf_setAttrib(result, R_NamesSymbol, result_names);
 
     UNPROTECT(4);
+    if (state->profile_filter)
+        state->profile_next_s += filter_profile_clock() - profile_next_start;
     return result;
+}
+
+/* Read counters before closing the experimental second-pass reader.
+ * Times exclude R tibble wrapping and final list binding. */
+SEXP attribute_visible C_marcxml_recovery_filter_profile(SEXP ext) {
+    recovery_batch_state *state = recovery_batch_reader_state(ext);
+    if (!state->profile_filter)
+        Rf_error("Profiling was not enabled on this recovery reader.");
+    const char *names[] = {"native_second_next_s", "native_second_validate_s",
+                           "native_second_write_s"};
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 3));
+    SEXP labels = PROTECT(Rf_allocVector(STRSXP, 3));
+    REAL(out)[0] = state->profile_next_s;
+    REAL(out)[1] = state->profile_validate_s;
+    REAL(out)[2] = state->profile_write_s;
+    for (int i = 0; i < 3; ++i) SET_STRING_ELT(labels, i, Rf_mkChar(names[i]));
+    Rf_setAttrib(out, R_NamesSymbol, labels);
+    UNPROTECT(2);
+    return out;
 }
 
 SEXP attribute_visible C_marcxml_recovery_reader_close(SEXP ext) {
@@ -3616,6 +3669,18 @@ typedef struct {
     R_xlen_t *pending_rows;
     int *pending_ids;
     R_xlen_t n_pending, pending_capacity;
+    int profile_enabled;
+    /* Experimental C2 only: retain independent record documents until the
+     * batch callback makes its decisions. C1 does not allocate these. */
+    int buffered_mode;
+    /* Experimental C1-F: full validation, canonical row counting and
+     * extraction of requested fields share one node traversal. The existing
+     * C1 and C2 paths are unchanged. */
+    int fused_screen_mode;
+    xmlDocPtr *buffered_docs;
+    R_xlen_t buffered_capacity, n_buffered;
+    double profile_next_s, profile_expand_count_s, profile_extract_s, profile_pack_s;
+    double profile_batches, profile_screen_rows;
 } filter_screen_state;
 
 static void filter_screen_clear_rows(filter_screen_state *s) {
@@ -3632,8 +3697,20 @@ static void filter_screen_clear_rows(filter_screen_state *s) {
     s->n_rows = 0;
 }
 
+static void filter_buffer_clear(filter_screen_state *s) {
+    for (R_xlen_t i = 0; i < s->n_buffered; ++i) {
+        if (s->buffered_docs[i]) {
+            xmlFreeDoc(s->buffered_docs[i]);
+            s->buffered_docs[i] = NULL;
+        }
+    }
+    s->n_buffered = 0;
+}
+
 static void filter_screen_free(filter_screen_state *s) {
     if (!s) return;
+    filter_buffer_clear(s);
+    free(s->buffered_docs);
     if (s->reader) xmlFreeTextReader(s->reader);
     filter_screen_clear_rows(s);
     free(s->rows);
@@ -3732,6 +3809,75 @@ static int filter_screen_extract_record(filter_screen_state *s, xmlNodePtr root,
     return 1;
 }
 
+/* Experimental C1-F (opt-in): fuse the existing strict structural validator
+ * and screening-field extraction into one traversal of the expanded record.
+ * This deliberately RETAINS exact row counting: selected records require the
+ * count for second-pass allocation, and the original INT_MAX guard is part of
+ * native validation. The experiment tests removal of the redundant traversal,
+ * not the false assumption that counting alone costs the whole validation time.
+ * This mirrors count_record_node()'s validation order and integer checks. */
+static int filter_screen_validate_extract_record(
+    filter_screen_state *s, xmlNodePtr root, int record_id, R_xlen_t *rows
+) {
+    if (!root || !named(root, "record") || !simple_attributes(root)) return 0;
+    const xmlChar *ns = namespace_uri(root);
+    if (ns[0] && !xmlStrEqual(ns, BAD_CAST "http://www.loc.gov/MARC21/slim"))
+        return 0;
+    int fields = 0, leaders = 0;
+    *rows = 0;
+    for (xmlNodePtr f = root->children; f; f = f->next) {
+        if (f->type != XML_ELEMENT_NODE) {
+            if (!ignorable(f)) return 0;
+            continue;
+        }
+        if (fields == INT_MAX) return 0;
+        ++fields;
+        if (!xmlStrEqual(namespace_uri(f), ns) || !simple_attributes(f)) return 0;
+        int leader = named(f, "leader");
+        int control = named(f, "controlfield");
+        const xmlChar *tag = leader ? BAD_CAST "LDR" : attribute(f, "tag");
+        if (!nonempty(tag)) return 0;
+        /* Evaluate tag interest once per field, without touching other values. */
+        int wanted = filter_screen_wants_tag(s, tag);
+        if (leader) {
+            if (fields != 1 || ++leaders != 1 || !text_only(f)) return 0;
+            ++*rows;
+            if (wanted && !filter_screen_append_row(s, record_id, fields - 1,
+                    NA_INTEGER, f->name, tag, NULL, f, NULL, NULL)) return 0;
+        } else if (control) {
+            if (!nonempty(tag) || !text_only(f)) return 0;
+            ++*rows;
+            if (wanted && !filter_screen_append_row(s, record_id, fields - 1,
+                    NA_INTEGER, f->name, tag, NULL, f, NULL, NULL)) return 0;
+        } else if (named(f, "datafield")) {
+            const xmlChar *ind1 = attribute(f, "ind1");
+            const xmlChar *ind2 = attribute(f, "ind2");
+            if (!nonempty(tag) || !nonempty(ind1) || !nonempty(ind2))
+                return 0;
+            int subs = 0;
+            for (xmlNodePtr sub = f->children; sub; sub = sub->next) {
+                if (sub->type != XML_ELEMENT_NODE) {
+                    if (!ignorable(sub)) return 0;
+                    continue;
+                }
+                if (subs == INT_MAX) return 0;
+                ++subs;
+                const xmlChar *code = attribute(sub, "code");
+                if (!named(sub, "subfield") ||
+                    !xmlStrEqual(namespace_uri(sub), ns) ||
+                    !simple_attributes(sub) || !nonempty(code) ||
+                    !text_only(sub)) return 0;
+                ++*rows;
+                if (wanted && !filter_screen_append_row(s, record_id, fields - 1,
+                        subs, f->name, tag, code, sub, ind1, ind2)) return 0;
+            }
+            if (!subs) return 0;
+        } else return 0;
+        if (*rows > INT_MAX) return 0;
+    }
+    return leaders == 1;
+}
+
 static void filter_screen_append_pending(filter_screen_state *s,
                                          int source_id, R_xlen_t nrows) {
     if (s->n_pending == s->pending_capacity) {
@@ -3754,15 +3900,52 @@ static void filter_screen_append_pending(filter_screen_state *s,
     ++s->n_pending;
 }
 
-SEXP attribute_visible C_marcxml_filter_screen_open(SEXP path, SEXP tags, SEXP n_max) {
+/* Deep-copy the expanded reader subtree to an independently owned document.
+ * Nodes borrowed from xmlTextReaderExpand() cannot survive reader advance.
+ * Reconcile inherited MARC namespace declarations before moving the reader. */
+static int filter_buffer_save_record(filter_screen_state *s, xmlNodePtr node) {
+    if (s->n_buffered != s->n_pending - 1) return 0;
+    if (s->n_pending > s->buffered_capacity) {
+        R_xlen_t cap = s->pending_capacity;
+        if (cap < s->n_pending ||
+            (uint64_t)cap > (uint64_t)SIZE_MAX / sizeof(xmlDocPtr))
+            return 0;
+        xmlDocPtr *new_docs = (xmlDocPtr *)realloc(s->buffered_docs,
+                              (size_t)cap * sizeof(xmlDocPtr));
+        if (!new_docs) return 0;
+        s->buffered_docs = new_docs;
+        s->buffered_capacity = cap;
+    }
+    xmlDocPtr doc = xmlNewDoc(BAD_CAST "1.0");
+    if (!doc) return 0;
+    xmlNodePtr root = xmlDocCopyNode(node, doc, 1);
+    if (!root) {
+        xmlFreeDoc(doc);
+        return 0;
+    }
+    xmlDocSetRootElement(doc, root);
+    if (xmlReconciliateNs(doc, root) < 0) {
+        xmlFreeDoc(doc);
+        return 0;
+    }
+    /* The original record was checked before copying. The materializer later
+     * verifies that the written canonical row count still matches its plan. */
+    s->buffered_docs[s->n_buffered++] = doc;
+    return 1;
+}
+
+SEXP attribute_visible C_marcxml_filter_screen_open(SEXP path, SEXP tags, SEXP n_max, SEXP profiling) {
     if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1 ||
         STRING_ELT(path, 0) == NA_STRING || TYPEOF(tags) != STRSXP ||
         XLENGTH(tags) == 0 || TYPEOF(n_max) != REALSXP ||
-        XLENGTH(n_max) != 1 || ISNA(REAL(n_max)[0]) || REAL(n_max)[0] < 0)
+        XLENGTH(n_max) != 1 || ISNA(REAL(n_max)[0]) || REAL(n_max)[0] < 0 ||
+        TYPEOF(profiling) != LGLSXP || XLENGTH(profiling) != 1 ||
+        LOGICAL(profiling)[0] == NA_LOGICAL)
         Rf_error("Invalid experimental MARCXML filtering inputs.");
     filter_screen_state *s = (filter_screen_state *)calloc(1, sizeof(*s));
     if (!s) Rf_error("Could not allocate MARCXML screening state.");
     s->n_max = REAL(n_max)[0];
+    s->profile_enabled = LOGICAL(profiling)[0];
     s->n_tags = XLENGTH(tags);
     s->tags = (char **)calloc((size_t)s->n_tags, sizeof(char *));
     s->plan = (marcxml_recovery_plan_state *)calloc(1, sizeof(*s->plan));
@@ -3776,6 +3959,7 @@ SEXP attribute_visible C_marcxml_filter_screen_open(SEXP path, SEXP tags, SEXP n
         Rf_error("Could not allocate MARCXML input path.");
     }
     s->plan->mode = MARCXML_PLAN_READ;
+    s->plan->profile_filter = s->profile_enabled;
     for (R_xlen_t i = 0; i < s->n_tags; ++i) {
         if (STRING_ELT(tags, i) == NA_STRING) {
             filter_screen_free(s);
@@ -3801,6 +3985,30 @@ SEXP attribute_visible C_marcxml_filter_screen_open(SEXP path, SEXP tags, SEXP n
     return ext;
 }
 
+/* Opt-in C1-F: reuse the C1 reader, enabling fused strict validation and
+ * screening extraction only on this experimental handle. */
+SEXP attribute_visible C_marcxml_filter_screen_open_fused(
+    SEXP path, SEXP tags, SEXP n_max, SEXP profiling
+) {
+    SEXP ext = PROTECT(C_marcxml_filter_screen_open(path, tags, n_max, profiling));
+    filter_screen_state *s = filter_screen_get(ext);
+    s->fused_screen_mode = 1;
+    UNPROTECT(1);
+    return ext;
+}
+
+/* Opt-in C2: the same screening reader, but copies the original record
+ * subtree into a bounded per-batch buffer. The second file traversal is
+ * avoided; the ordinary and C1 paths remain separate and unchanged. */
+SEXP attribute_visible C_marcxml_filter_buffer_open(SEXP path, SEXP tags, SEXP n_max) {
+    SEXP profiling = PROTECT(Rf_ScalarLogical(0));
+    SEXP ext = PROTECT(C_marcxml_filter_screen_open(path, tags, n_max, profiling));
+    filter_screen_state *s = filter_screen_get(ext);
+    s->buffered_mode = 1;
+    UNPROTECT(2);
+    return ext;
+}
+
 /* Each screened source record is validated but only requested tags' values
  * are copied into R; the callback is invoked once per batch in R. */
 SEXP attribute_visible C_marcxml_filter_screen_next(SEXP ext, SEXP maximum) {
@@ -3810,6 +4018,7 @@ SEXP attribute_visible C_marcxml_filter_screen_next(SEXP ext, SEXP maximum) {
         Rf_error("Invalid experimental MARCXML screening batch size.");
     if (s->pending) Rf_error("Apply screening decisions before requesting another batch.");
     if (s->done) return R_NilValue;
+    double profile_next_start = s->profile_enabled ? filter_profile_clock() : 0.0;
     R_xlen_t limit = INTEGER(maximum)[0];
     filter_screen_clear_rows(s);
     s->n_pending = 0;
@@ -3845,14 +4054,29 @@ SEXP attribute_visible C_marcxml_filter_screen_next(SEXP ext, SEXP maximum) {
             ++s->plan->records_total;
             R_xlen_t source_id = s->plan->records_total;
             if (!R_FINITE(s->n_max) || (double)source_id <= s->n_max) {
+                double profile_expand_start = s->profile_enabled ? filter_profile_clock() : 0.0;
                 xmlNodePtr node = xmlTextReaderExpand(s->reader);
                 R_xlen_t all_rows = 0;
-                if (!node || !count_record_node(node, &all_rows))
-                    Rf_error("Unsupported or invalid MARCXML record during native screening.");
+                if (s->fused_screen_mode) {
+                    if (!node || !filter_screen_validate_extract_record(
+                            s, node, (int)source_id, &all_rows))
+                        Rf_error("Unsupported or invalid MARCXML record during native screening.");
+                } else {
+                    if (!node || !count_record_node(node, &all_rows))
+                        Rf_error("Unsupported or invalid MARCXML record during native screening.");
+                }
+                if (s->profile_enabled)
+                    s->profile_expand_count_s += filter_profile_clock() - profile_expand_start;
                 ++s->plan->source_records_selected;
                 filter_screen_append_pending(s, (int)source_id, all_rows);
-                if (!filter_screen_extract_record(s, node, (int)source_id))
+                double profile_extract_start = s->profile_enabled ? filter_profile_clock() : 0.0;
+                if (!s->fused_screen_mode &&
+                    !filter_screen_extract_record(s, node, (int)source_id))
                     Rf_error("Could not extract requested MARCXML screening fields.");
+                if (s->buffered_mode && !filter_buffer_save_record(s, node))
+                    Rf_error("Could not preserve a MARCXML record for buffered screening.");
+                if (s->profile_enabled)
+                    s->profile_extract_s += filter_profile_clock() - profile_extract_start;
             }
             s->rc = xmlTextReaderNext(s->reader);
             continue;
@@ -3864,8 +4088,17 @@ SEXP attribute_visible C_marcxml_filter_screen_next(SEXP ext, SEXP maximum) {
         if (!s->root_seen) Rf_error("Missing MARCXML document root.");
         s->done = 1;
     }
-    if (s->n_pending == 0) return R_NilValue;
+    if (s->n_pending == 0) {
+        if (s->profile_enabled)
+            s->profile_next_s += filter_profile_clock() - profile_next_start;
+        return R_NilValue;
+    }
     s->pending = 1;
+    double profile_pack_start = s->profile_enabled ? filter_profile_clock() : 0.0;
+    if (s->profile_enabled) {
+        s->profile_batches += 1.0;
+        s->profile_screen_rows += (double)s->n_rows;
+    }
 
     const char *names_c[] = {"record_id", "field_type", "tag", "subfield_code",
          "value", "field_order", "ind1", "ind2", "subfield_order"};
@@ -3902,11 +4135,39 @@ SEXP attribute_visible C_marcxml_filter_screen_next(SEXP ext, SEXP maximum) {
     Rf_setAttrib(out, R_NamesSymbol, outnames);
     UNPROTECT(5);
     filter_screen_clear_rows(s);
+    if (s->profile_enabled) {
+        s->profile_pack_s += filter_profile_clock() - profile_pack_start;
+        s->profile_next_s += filter_profile_clock() - profile_next_start;
+    }
+    return out;
+}
+
+/* C screening durations; screen_next includes extraction, validation, packing
+ * and XML traversal. The remaining time is derived rather than timed. */
+SEXP attribute_visible C_marcxml_filter_screen_profile(SEXP ext) {
+    filter_screen_state *s = filter_screen_get(ext);
+    if (!s->profile_enabled) Rf_error("Filtering profiling was not enabled.");
+    const char *names[] = {"native_screen_next_s", "native_expand_count_s",
+        "native_selected_extract_s", "native_screen_pack_s", "screen_batches",
+        "screening_rows", "source_records_scanned"};
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 7));
+    SEXP labels = PROTECT(Rf_allocVector(STRSXP, 7));
+    REAL(out)[0] = s->profile_next_s;
+    REAL(out)[1] = s->profile_expand_count_s;
+    REAL(out)[2] = s->profile_extract_s;
+    REAL(out)[3] = s->profile_pack_s;
+    REAL(out)[4] = s->profile_batches;
+    REAL(out)[5] = s->profile_screen_rows;
+    REAL(out)[6] = (double)s->plan->source_records_selected;
+    for (int i = 0; i < 7; ++i) SET_STRING_ELT(labels, i, Rf_mkChar(names[i]));
+    Rf_setAttrib(out, R_NamesSymbol, labels);
+    UNPROTECT(2);
     return out;
 }
 
 SEXP attribute_visible C_marcxml_filter_screen_apply(SEXP ext, SEXP keep) {
     filter_screen_state *s = filter_screen_get(ext);
+    if (s->buffered_mode) Rf_error("Buffered filtering requires the buffered apply method.");
     if (!s->pending) Rf_error("There are no pending MARCXML screening decisions.");
     if (TYPEOF(keep) != LGLSXP || XLENGTH(keep) != s->n_pending)
         Rf_error("One logical decision is required per source record.");
@@ -3922,8 +4183,70 @@ SEXP attribute_visible C_marcxml_filter_screen_apply(SEXP ext, SEXP keep) {
     return R_NilValue;
 }
 
+/* Consume the buffered XML records *before* requesting the next batch.
+ * No second XML reader, no entire input in R, no canonical rows for rejects.
+ * Output columns use the same allocation/writer machinery as the C1 reader. */
+SEXP attribute_visible C_marcxml_filter_buffer_apply(SEXP ext, SEXP keep) {
+    filter_screen_state *s = filter_screen_get(ext);
+    if (!s->buffered_mode || !s->pending || s->n_buffered != s->n_pending)
+        Rf_error("No complete buffered MARCXML screening batch is pending.");
+    if (TYPEOF(keep) != LGLSXP || XLENGTH(keep) != s->n_pending)
+        Rf_error("One logical decision is required per source record.");
+    R_xlen_t total_rows = 0, max_rows = 0;
+    for (R_xlen_t i = 0; i < s->n_pending; ++i) {
+        if (LOGICAL(keep)[i] == NA_LOGICAL)
+            Rf_error("Missing MARCXML record-selection decision.");
+        if (!LOGICAL(keep)[i]) continue;
+        R_xlen_t rows = s->pending_rows[i];
+        if (rows > R_XLEN_T_MAX - total_rows)
+            Rf_error("Filtered MARCXML canonical batch is too large.");
+        total_rows += rows;
+        if (rows > max_rows) max_rows = rows;
+    }
+    SEXP columns = PROTECT(Rf_allocVector(VECSXP, 11));
+    SEXP labels = PROTECT(Rf_allocVector(STRSXP, 11));
+    SEXP cols[11];
+    for (int j = 0; j < 11; ++j) {
+        cols[j] = Rf_allocVector(column_types[j], total_rows);
+        SET_VECTOR_ELT(columns, j, cols[j]);
+        SET_STRING_ELT(labels, j, Rf_mkChar(column_names[j]));
+        if (column_types[j] == INTSXP) {
+            for (R_xlen_t k = 0; k < total_rows; ++k)
+                INTEGER(cols[j])[k] = NA_INTEGER;
+        } else {
+            for (R_xlen_t k = 0; k < total_rows; ++k)
+                SET_STRING_ELT(cols[j], k, NA_STRING);
+        }
+    }
+    Rf_setAttrib(columns, R_NamesSymbol, labels);
+    if (total_rows > 0) {
+        size_t cap = table_capacity(max_rows);
+        occurrence_slot *fields = (occurrence_slot *)R_alloc(cap, sizeof(*fields));
+        occurrence_slot *subs = (occurrence_slot *)R_alloc(cap, sizeof(*subs));
+        R_xlen_t row = 0;
+        xmlChar *text = NULL;
+        for (R_xlen_t i = 0; i < s->n_pending; ++i) {
+            if (!LOGICAL(keep)[i]) continue;
+            xmlNodePtr root = xmlDocGetRootElement(s->buffered_docs[i]);
+            R_xlen_t before = row;
+            write_record_node(root, s->pending_ids[i], cols, &row,
+                              fields, subs, cap, &text);
+            if (row - before != s->pending_rows[i])
+                Rf_error("Buffered MARCXML record row count changed during writing.");
+        }
+        if (row != total_rows)
+            Rf_error("Buffered MARCXML writer produced incorrect canonical rows.");
+    }
+    filter_buffer_clear(s);
+    s->pending = 0;
+    s->n_pending = 0;
+    UNPROTECT(2);
+    return columns;
+}
+
 SEXP attribute_visible C_marcxml_filter_screen_finish(SEXP ext) {
     filter_screen_state *s = filter_screen_get(ext);
+    if (s->buffered_mode) Rf_error("Buffered screening does not create a two-pass plan.");
     if (!s->done || s->pending)
         Rf_error("MARCXML screening must finish and apply all decisions first.");
     if (s->reader) {
@@ -3949,7 +4272,12 @@ SEXP attribute_visible C_marcxml_filter_screen_close(SEXP ext) {
 }
 
 static const R_CallMethodDef call_methods[] = {
-    {"C_marcxml_filter_screen_open", (DL_FUNC)&C_marcxml_filter_screen_open, 3},
+    {"C_marcxml_filter_buffer_open", (DL_FUNC)&C_marcxml_filter_buffer_open, 3},
+    {"C_marcxml_filter_buffer_apply", (DL_FUNC)&C_marcxml_filter_buffer_apply, 2},
+    {"C_marcxml_filter_screen_open", (DL_FUNC)&C_marcxml_filter_screen_open, 4},
+    {"C_marcxml_filter_screen_open_fused", (DL_FUNC)&C_marcxml_filter_screen_open_fused, 4},
+    {"C_marcxml_filter_screen_profile", (DL_FUNC)&C_marcxml_filter_screen_profile, 1},
+    {"C_marcxml_recovery_filter_profile", (DL_FUNC)&C_marcxml_recovery_filter_profile, 1},
     {"C_marcxml_filter_screen_next", (DL_FUNC)&C_marcxml_filter_screen_next, 2},
     {"C_marcxml_filter_screen_apply", (DL_FUNC)&C_marcxml_filter_screen_apply, 2},
     {"C_marcxml_filter_screen_finish", (DL_FUNC)&C_marcxml_filter_screen_finish, 1},

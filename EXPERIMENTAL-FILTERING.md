@@ -84,3 +84,43 @@ marcxmlr:::.prototype_marcxml_to_parquet_filtered(
   Specifically test the new native callbacks under valgrind or sanitizers and
   compare selective screening against full canonical batch filtering before
   considering any production integration.
+
+## Experimental phase profiling (Linux only)
+
+The internal `.prototype_profile_marcxml_filtered()` function enables a
+monotonic-clock timing layer that is inactive for normal filtering and absent
+from the public parser. It returns `list(result, timings, counts)`; `result`
+is the complete selected canonical tibble, identical to the unprofiled
+prototype. The native timers instrument:
+
+- The first-pass screening calls (`screen_native_s`), including `screen_validate_s`
+  (record expansion and complete-record row counting), `screen_extract_s`
+  (selective field extraction), and `screen_pack_s` (constructing R vectors and
+  freeing temporary screening rows).
+- The R predicate callbacks (`r_filter_callback_s`).
+- The second-pass recovery reader calls (`second_native_s`), including
+  `second_revalidate_s` and `second_write_s`.
+- The final binding of canonical batches (`bind_s`).
+
+The `screen_native_other_s` and `second_native_other_s` columns are *residuals*,
+not isolated measurements of XML traversal. They include I/O, XML navigation,
+allocation and native bookkeeping; the latter also includes scanning rejected
+records. `plan_r_other_s`, `second_r_other_s`, and `total_other_s` are residuals
+at the R boundary. The named nested subtimings **must not be summed together**.
+Native monotonic timings exclude time outside the relevant `.Call` operation.
+The reported total includes the R calls and final binding. They have measurement
+overhead, and cannot be compared directly with uninstrumented stage-1/2 timings.
+
+After installing the branch (`R CMD INSTALL .`), profile the 40,000-record GPO
+input with:
+
+```sh
+Rscript tools/profile-filter-stage3.R \
+  ~/marcxmlr-repro/benchmark-inputs/cataloging-records-all-cgp-XML-00.xml
+```
+
+The script verifies exact equality with ordinary full parsing and writes raw
+per-run measurements and median phase timings under `~/marcxmlr-filter-profile-*`.
+No baseline performance figures are overwritten. The first experiment measures
+field-presence predicates only; value-based callbacks and filtered Parquet
+workflows remain future experiments. Profiling may itself influence timings.
