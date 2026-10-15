@@ -68,6 +68,63 @@
   tibble::new_tibble(columns, nrow = length(columns[[1L]]))
 }
 
+# Process selected XML byte ranges in bounded batches, using only the
+# optimized native streaming reader. Unfiltered ingestion never uses this path.
+.c4_visit_offsets <- function(file, offsets, consume,
+                              batch_records = 500L,
+                              batch_bytes = 16 * 1024^2) {
+  file <- normalizePath(file, winslash = "/", mustWork = TRUE)
+  if (!is.data.frame(offsets) ||
+      !all(c("start_byte", "end_byte") %in% names(offsets))) {
+    stop("`offsets` must contain `start_byte` and `end_byte` columns.",
+         call. = FALSE)
+  }
+  if (!is.function(consume)) {
+    stop("`consume` must be a function.", call. = FALSE)
+  }
+  batch_records <- .validate_positive_whole_number(batch_records, "batch_records")
+  batch_bytes <- .validate_positive_whole_number(batch_bytes, "batch_bytes")
+  starts <- as.double(offsets$start_byte)
+  ends <- as.double(offsets$end_byte)
+  n <- length(starts)
+  if (n > .Machine$integer.max ||
+      any(!is.finite(starts)) || any(!is.finite(ends)) ||
+      any(starts < 0) || any(ends <= starts) ||
+      any(starts != floor(starts)) || any(ends != floor(ends)) ||
+      any(ends > file.info(file)$size) ||
+      (n > 1L && any(starts[-1L] < ends[-n]))) {
+    stop("Selected offsets must be ordered, non-overlapping valid byte ranges.",
+         call. = FALSE)
+  }
+  i <- 1L
+  while (i <= n) {
+    j <- i
+    bytes <- 0
+    repeat {
+      next_bytes <- ends[[j]] - starts[[j]]
+      if (next_bytes > batch_bytes) {
+        stop("Selected record exceeds `batch_bytes`; increase the bound.",
+             call. = FALSE)
+      }
+      if (j > i && bytes + next_bytes > batch_bytes) break
+      bytes <- bytes + next_bytes
+      if (j == n || (j - i + 1L) >= batch_records) {
+        j <- j + 1L
+        break
+      }
+      j <- j + 1L
+    }
+    selected <- i:(j - 1L)
+    columns <- .Call(C_marcxml_offset_parse_batch_stream, file,
+                     starts[selected], ends[selected], as.integer(i))
+    # Profiling metadata is never part of the canonical representation.
+    attr(columns, "c4_native_profile") <- NULL
+    consume(tibble::new_tibble(columns, nrow = length(columns[[1L]])))
+    i <- j
+  }
+  invisible(NULL)
+}
+
 .c4_read_filtered <- function(file, n_max, filter_tag,
                               filter_subfield, filter_equals) {
   offsets <- .c4_screen_file(file, filter_tag, filter_subfield, filter_equals)
@@ -77,8 +134,7 @@
   batches <- list()
   .c4_visit_offsets(
     file, offsets,
-    consume = function(batch) batches[[length(batches) + 1L]] <<- batch,
-    .engine = "reader"
+    consume = function(batch) batches[[length(batches) + 1L]] <<- batch
   )
   .bind_marcxml_results(batches)
 }
@@ -111,8 +167,7 @@
         records <<- records + length(unique(batch$record_id))
         rows <<- rows + nrow(batch)
       },
-      batch_records = batch_records,
-      .engine = "reader"
+      batch_records = batch_records
     )
   }
   if (parts == 0L) {
