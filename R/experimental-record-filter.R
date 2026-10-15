@@ -4,7 +4,7 @@
 
 .prototype_filter_plan <- function(file, filter_tags, record_filter,
                                    n_max = Inf, screen_batch_records = 1000L,
-                                   .profile = FALSE, .fused = FALSE) {
+                                   .profile = FALSE, .fused = FALSE, .light = FALSE) {
   if (!is.character(file) || length(file) != 1L || is.na(file) ||
       !file.exists(file)) {
     stop("`file` must be an existing MARCXML file.", call. = FALSE)
@@ -31,7 +31,8 @@
 
   # The default remains the tested C1 path. Fusion is opt-in for measurement.
   screening <- .Call(
-    if (isTRUE(.fused)) C_marcxml_filter_screen_open_fused
+    if (isTRUE(.light)) C_marcxml_filter_screen_open_light
+    else if (isTRUE(.fused)) C_marcxml_filter_screen_open_fused
     else C_marcxml_filter_screen_open,
     normalizePath(file, winslash = "/", mustWork = TRUE),
     tags,

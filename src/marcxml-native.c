@@ -3677,6 +3677,11 @@ typedef struct {
      * extraction of requested fields share one node traversal. The existing
      * C1 and C2 paths are unchanged. */
     int fused_screen_mode;
+    /* C3: first pass reads XML events only; selected nodes are counted later. */
+    int light_screen_mode;
+    int light_in_record, light_record_depth, light_field_order;
+    int light_subfield_order, light_datafield_depth;
+    xmlChar *light_tag, *light_ind1, *light_ind2;
     xmlDocPtr *buffered_docs;
     R_xlen_t buffered_capacity, n_buffered;
     double profile_next_s, profile_expand_count_s, profile_extract_s, profile_pack_s;
@@ -3709,6 +3714,9 @@ static void filter_buffer_clear(filter_screen_state *s) {
 
 static void filter_screen_free(filter_screen_state *s) {
     if (!s) return;
+    xmlFree(s->light_tag);
+    xmlFree(s->light_ind1);
+    xmlFree(s->light_ind2);
     filter_buffer_clear(s);
     free(s->buffered_docs);
     if (s->reader) xmlFreeTextReader(s->reader);
@@ -3749,19 +3757,25 @@ static int filter_screen_wants_tag(const filter_screen_state *s, const xmlChar *
     return 0;
 }
 
-static int filter_screen_append_row(filter_screen_state *s,
+static int filter_screen_append_owned_row(filter_screen_state *s,
     int record_id, int field_order, int subfield_order,
     const xmlChar *field_type, const xmlChar *tag,
-    const xmlChar *subfield_code, xmlNodePtr content,
+    const xmlChar *subfield_code, xmlChar *owned_value,
     const xmlChar *ind1, const xmlChar *ind2) {
-    if (s->n_rows == R_XLEN_T_MAX || s->n_rows >= INT_MAX) return 0;
+    if (s->n_rows == R_XLEN_T_MAX || s->n_rows >= INT_MAX) {
+        xmlFree(owned_value);
+        return 0;
+    }
     if (s->n_rows == s->row_capacity) {
         R_xlen_t cap = s->row_capacity ? s->row_capacity * 2 : 256;
         if (cap <= s->row_capacity ||
-            (uint64_t)cap > (uint64_t)SIZE_MAX / sizeof(filter_screen_row)) return 0;
+            (uint64_t)cap > (uint64_t)SIZE_MAX / sizeof(filter_screen_row)) {
+            xmlFree(owned_value);
+            return 0;
+        }
         filter_screen_row *tmp = (filter_screen_row *)realloc(s->rows,
             (size_t)cap * sizeof(filter_screen_row));
-        if (!tmp) return 0;
+        if (!tmp) { xmlFree(owned_value); return 0; }
         s->rows = tmp;
         s->row_capacity = cap;
     }
@@ -3775,11 +3789,24 @@ static int filter_screen_append_row(filter_screen_state *s,
     if (subfield_code) r->subfield_code = xmlStrdup(subfield_code);
     if (ind1) r->ind1 = xmlStrdup(ind1);
     if (ind2) r->ind2 = xmlStrdup(ind2);
-    r->value = xmlNodeGetContent(content);
+    r->value = owned_value;
     ++s->n_rows; /* ensure partially initialized memory can be cleaned */
     return r->field_type && r->tag && r->value &&
         (!subfield_code || r->subfield_code) &&
         (!ind1 || r->ind1) && (!ind2 || r->ind2);
+}
+
+/* Preserve existing C1 extraction semantics while allowing C3 to supply
+ * text obtained directly from the event reader, without creating XML nodes. */
+static int filter_screen_append_row(filter_screen_state *s,
+    int record_id, int field_order, int subfield_order,
+    const xmlChar *field_type, const xmlChar *tag,
+    const xmlChar *subfield_code, xmlNodePtr content,
+    const xmlChar *ind1, const xmlChar *ind2) {
+    xmlChar *value = xmlNodeGetContent(content);
+    if (!value) return 0;
+    return filter_screen_append_owned_row(s, record_id, field_order,
+        subfield_order, field_type, tag, subfield_code, value, ind1, ind2);
 }
 
 static int filter_screen_extract_record(filter_screen_state *s, xmlNodePtr root,
@@ -4009,6 +4036,189 @@ SEXP attribute_visible C_marcxml_filter_buffer_open(SEXP path, SEXP tags, SEXP n
     return ext;
 }
 
+/* C3 is intentionally opt-in: normal unfiltered and C1 readers remain
+ * exactly as before. The screening phase does not expand any record tree. */
+SEXP attribute_visible C_marcxml_filter_screen_open_light(
+    SEXP path, SEXP tags, SEXP n_max, SEXP profiling
+) {
+    SEXP ext = PROTECT(C_marcxml_filter_screen_open(path, tags, n_max, profiling));
+    filter_screen_get(ext)->light_screen_mode = 1;
+    UNPROTECT(1);
+    return ext;
+}
+
+static void filter_light_clear_field(filter_screen_state *s) {
+    xmlFree(s->light_tag); s->light_tag = NULL;
+    xmlFree(s->light_ind1); s->light_ind1 = NULL;
+    xmlFree(s->light_ind2); s->light_ind2 = NULL;
+    s->light_datafield_depth = -1;
+    s->light_subfield_order = 0;
+}
+
+/* Read only attributes and text needed for screening. An irrelevant field is
+ * skipped with xmlTextReaderNext() (the underlying XML is still parsed).
+ * Discarded records are NOT MARC-validated; selected records are fully checked
+ * by count_record_node() in the selected-only planning pass. */
+static void filter_light_next_records(filter_screen_state *s, R_xlen_t limit) {
+    while (s->rc == 1 && s->n_pending < limit) {
+        int type = xmlTextReaderNodeType(s->reader);
+        int depth = xmlTextReaderDepth(s->reader);
+        if (type == XML_READER_TYPE_DOCUMENT_TYPE)
+            Rf_error("DTD is not supported by experimental C3 screening.");
+        if (type == XML_READER_TYPE_ELEMENT && depth == 0) {
+            if (s->root_seen) Rf_error("Invalid repeated MARCXML root.");
+            s->root_seen = 1;
+            int ns = reader_namespace_kind(s->reader);
+            if (ns < 0) Rf_error("Unsupported MARCXML root namespace.");
+            s->plan->root_namespace_kind = ns;
+            if (reader_named(s->reader, "collection")) {
+                s->plan->input_kind = MARCXML_ROOT_COLLECTION;
+            } else if (reader_named(s->reader, "record")) {
+                s->plan->input_kind = MARCXML_ROOT_RECORD;
+            } else Rf_error("Expected MARCXML collection or record.");
+        }
+        int at_record = type == XML_READER_TYPE_ELEMENT &&
+            ((s->plan->input_kind == MARCXML_ROOT_RECORD && depth == 0) ||
+             (s->plan->input_kind == MARCXML_ROOT_COLLECTION && depth == 1 &&
+              reader_named(s->reader, "record")));
+        if (at_record) {
+            if (s->plan->records_total >= INT_MAX)
+                Rf_error("MARCXML screening source position exceeds integer capacity.");
+            ++s->plan->records_total;
+            s->light_record_depth = depth;
+            s->light_field_order = -1;
+            s->light_in_record = !R_FINITE(s->n_max) ||
+                (double)s->plan->records_total <= s->n_max;
+            if (!s->light_in_record) {
+                s->rc = xmlTextReaderNext(s->reader);
+                continue;
+            }
+            ++s->plan->source_records_selected;
+            if (xmlTextReaderIsEmptyElement(s->reader)) {
+                filter_screen_append_pending(s, (int)s->plan->records_total, 0);
+                s->light_in_record = 0;
+            }
+        } else if (s->light_in_record && type == XML_READER_TYPE_ELEMENT &&
+                   depth == s->light_record_depth + 1) {
+            if (s->light_field_order == INT_MAX)
+                Rf_error("MARCXML screening field order exceeds integer capacity.");
+            ++s->light_field_order;
+            filter_light_clear_field(s);
+            int leader = reader_named(s->reader, "leader");
+            int control = reader_named(s->reader, "controlfield");
+            int datafield = reader_named(s->reader, "datafield");
+            xmlChar *tag = leader ? xmlStrdup(BAD_CAST "LDR") :
+                (control || datafield ?
+                 xmlTextReaderGetAttribute(s->reader, BAD_CAST "tag") : NULL);
+            int wanted = tag && filter_screen_wants_tag(s, tag);
+            if (wanted && (leader || control)) {
+                xmlChar *value = xmlTextReaderReadString(s->reader);
+                if (!value) value = xmlStrdup(BAD_CAST "");
+                if (!value || !filter_screen_append_owned_row(s,
+                        (int)s->plan->records_total, s->light_field_order,
+                        NA_INTEGER, leader ? BAD_CAST "leader" : BAD_CAST "controlfield",
+                        tag, NULL, value, NULL, NULL))
+                    Rf_error("Could not collect C3 control-field screening value.");
+            } else if (wanted && datafield) {
+                s->light_tag = tag; tag = NULL;
+                s->light_ind1 = xmlTextReaderGetAttribute(s->reader, BAD_CAST "ind1");
+                s->light_ind2 = xmlTextReaderGetAttribute(s->reader, BAD_CAST "ind2");
+                s->light_datafield_depth = depth;
+            } else {
+                /* The screening predicate cannot need this field. */
+                xmlFree(tag);
+                s->rc = xmlTextReaderNext(s->reader);
+                continue;
+            }
+            xmlFree(tag);
+        } else if (s->light_in_record && type == XML_READER_TYPE_ELEMENT &&
+                   s->light_tag && depth == s->light_datafield_depth + 1) {
+            if (s->light_subfield_order == INT_MAX)
+                Rf_error("MARCXML screening subfield order exceeds integer capacity.");
+            ++s->light_subfield_order;
+            if (reader_named(s->reader, "subfield")) {
+                xmlChar *code = xmlTextReaderGetAttribute(s->reader, BAD_CAST "code");
+                xmlChar *value = xmlTextReaderReadString(s->reader);
+                if (!value) value = xmlStrdup(BAD_CAST "");
+                int ok = value && filter_screen_append_owned_row(s,
+                    (int)s->plan->records_total, s->light_field_order,
+                    s->light_subfield_order, BAD_CAST "datafield", s->light_tag,
+                    code, value, s->light_ind1, s->light_ind2);
+                xmlFree(code);
+                if (!ok) Rf_error("Could not collect C3 subfield screening value.");
+            }
+        } else if (s->light_in_record && type == XML_READER_TYPE_END_ELEMENT &&
+                   depth == s->light_record_depth && reader_named(s->reader, "record")) {
+            filter_light_clear_field(s);
+            filter_screen_append_pending(s, (int)s->plan->records_total, 0);
+            s->light_in_record = 0;
+        }
+        s->rc = xmlTextReaderRead(s->reader);
+    }
+    if (s->rc < 0) Rf_error("Invalid XML syntax during C3 screening.");
+    if (s->rc == 0) {
+        if (!s->root_seen) Rf_error("Missing MARCXML document root.");
+        if (s->light_in_record) Rf_error("Incomplete MARCXML screening record.");
+        s->done = 1;
+    }
+}
+
+/* Only selected record positions are visited by the full MARC validation /
+ * canonical counting routine. This is a separate traversal; the ordinary
+ * sparse native writer then handles the final materialization traversal.
+ * No extra MARC validations on records that were rejected by the predicate. */
+static void filter_light_count_selected(filter_screen_state *s) {
+    marcxml_recovery_plan_state *p = s->plan;
+    if (p->records_valid == 0) return;
+    int options = XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING;
+    xmlTextReaderPtr reader = xmlReaderForFile(p->path, NULL, options);
+    if (!reader) Rf_error("Could not open C3 selected-record validation input.");
+    xmlTextReaderSetStructuredErrorHandler(reader, quiet_error, NULL);
+    int rc = xmlTextReaderRead(reader), root_seen = 0;
+    R_xlen_t source_seen = 0, target_index = 0;
+    while (rc == 1 && target_index < p->records_valid) {
+        int type = xmlTextReaderNodeType(reader);
+        int depth = xmlTextReaderDepth(reader);
+        if (type == XML_READER_TYPE_DOCUMENT_TYPE) break;
+        if (type == XML_READER_TYPE_ELEMENT && depth == 0) {
+            if (root_seen) break;
+            root_seen = 1;
+            if (p->input_kind == MARCXML_ROOT_RECORD) {
+                source_seen = 1;
+            }
+        }
+        int at_record = type == XML_READER_TYPE_ELEMENT &&
+            ((p->input_kind == MARCXML_ROOT_RECORD && depth == 0) ||
+             (p->input_kind == MARCXML_ROOT_COLLECTION && depth == 1 &&
+              reader_named(reader, "record")));
+        if (at_record) {
+            if (p->input_kind == MARCXML_ROOT_COLLECTION) ++source_seen;
+            R_xlen_t target = p->source_record_per_valid[target_index];
+            if (source_seen == target) {
+                xmlNodePtr node = xmlTextReaderExpand(reader);
+                R_xlen_t rows = 0;
+                if (!node || !count_record_node(node, &rows)) {
+                    xmlFreeTextReader(reader);
+                    Rf_error("Selected MARCXML record failed native structural validation.");
+                }
+                p->rows_per_record[target_index] = rows;
+                if (rows > R_XLEN_T_MAX - p->rows_valid) {
+                    xmlFreeTextReader(reader);
+                    Rf_error("C3 selected canonical row count exceeds capacity.");
+                }
+                p->rows_valid += rows;
+                ++target_index;
+            }
+            rc = xmlTextReaderNext(reader);
+            continue;
+        }
+        rc = xmlTextReaderRead(reader);
+    }
+    xmlFreeTextReader(reader);
+    if (target_index != p->records_valid)
+        Rf_error("Selected MARCXML record positions were not found during validation.");
+}
+
 /* Each screened source record is validated but only requested tags' values
  * are copied into R; the callback is invoked once per batch in R. */
 SEXP attribute_visible C_marcxml_filter_screen_next(SEXP ext, SEXP maximum) {
@@ -4023,6 +4233,9 @@ SEXP attribute_visible C_marcxml_filter_screen_next(SEXP ext, SEXP maximum) {
     filter_screen_clear_rows(s);
     s->n_pending = 0;
 
+    if (s->light_screen_mode) {
+        filter_light_next_records(s, limit);
+    } else {
     while (s->rc == 1 && s->n_pending < limit) {
         int type = xmlTextReaderNodeType(s->reader);
         int depth = xmlTextReaderDepth(s->reader);
@@ -4083,6 +4296,7 @@ SEXP attribute_visible C_marcxml_filter_screen_next(SEXP ext, SEXP maximum) {
         }
         s->rc = xmlTextReaderRead(s->reader);
     }
+    } /* C1/C1-F/C2 subtree-screening path */
     if (s->rc < 0) Rf_error("Invalid XML syntax during MARCXML screening.");
     if (s->rc == 0) {
         if (!s->root_seen) Rf_error("Missing MARCXML document root.");
@@ -4253,6 +4467,7 @@ SEXP attribute_visible C_marcxml_filter_screen_finish(SEXP ext) {
         xmlFreeTextReader(s->reader);
         s->reader = NULL;
     }
+    if (s->light_screen_mode) filter_light_count_selected(s);
     s->plan->mode = MARCXML_PLAN_READ;
     SEXP planext = PROTECT(
         R_MakeExternalPtr(s->plan, recovery_plan_tag(), R_NilValue)
@@ -4276,6 +4491,7 @@ static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_filter_buffer_apply", (DL_FUNC)&C_marcxml_filter_buffer_apply, 2},
     {"C_marcxml_filter_screen_open", (DL_FUNC)&C_marcxml_filter_screen_open, 4},
     {"C_marcxml_filter_screen_open_fused", (DL_FUNC)&C_marcxml_filter_screen_open_fused, 4},
+    {"C_marcxml_filter_screen_open_light", (DL_FUNC)&C_marcxml_filter_screen_open_light, 4},
     {"C_marcxml_filter_screen_profile", (DL_FUNC)&C_marcxml_filter_screen_profile, 1},
     {"C_marcxml_recovery_filter_profile", (DL_FUNC)&C_marcxml_recovery_filter_profile, 1},
     {"C_marcxml_filter_screen_next", (DL_FUNC)&C_marcxml_filter_screen_next, 2},
