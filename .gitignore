@@ -14,3 +14,5 @@ src/*.dll
 /src/Makevars
 
 /configure.log
+
+/configure-expat.log
