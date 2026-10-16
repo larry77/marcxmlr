@@ -752,6 +752,81 @@ point and additional worker processes may be slower. Parallel execution is more
 naturally useful when substantial independent files can be assigned to separate
 workers.
 
+## Prefiltering complete MARC records
+
+When only records with particular MARC content are needed, `marcxmlr` can
+**select records during ingestion**, before expanding them into the canonical
+11-column table. This differs from filtering canonical rows afterwards:
+**every field of a matching record is retained**, not only the field that
+satisfied the condition. For selective queries, this can avoid materializing
+many unwanted records.
+
+For example, select bibliographic records containing at least one `856` field
+(electronic location and access) from the bundled 1,000-record GPO sample:
+
+```r
+gpo_xml <- system.file(
+  "extdata", "gpo-cgp-part00-sample.xml", package = "marcxmlr"
+)
+
+links <- read_marcxml(gpo_xml, filter_tag = "856")
+c(records = length(unique(links$record_id)), rows = nrow(links))
+#> records    rows
+#>       4     309
+```
+
+The result contains **four complete records** (309 canonical rows), not just
+their `856` fields. Filtering can also require a particular subfield and an
+**exact text value**. Using the Orwell record introduced earlier:
+
+```r
+matched <- read_marcxml(
+  source_xml,
+  filter_tag = "650",
+  filter_subfield = "a",
+  filter_equals = "Totalitarianism"
+)
+identical(matched, marc)
+#> [1] TRUE
+```
+
+The condition matches a `650 $a` value, but the entire record is returned.
+Matching is case-sensitive and `filter_equals` is an exact string, not a
+regular expression. If no record matches, the result is an empty tibble with
+the same 11 columns.
+
+Prefiltering is also available when writing **Parquet** (requires `arrow`):
+
+```r
+out <- tempfile("gpo-856-parquet-")
+info <- marcxml_to_parquet(
+  gpo_xml, output_dir = out,
+  filter_tag = "856", workers = 1L, verbose = FALSE
+)
+sum(info$records)
+#> [1] 4
+```
+
+For a collection already split into files, filtering can use **file-level
+parallelism** (requires the package's parallel backends):
+
+```r
+marcxml_to_parquet(
+  c(source_xml, gpo_xml),
+  output_dir = tempfile("selected-catalogue-"),
+  filter_tag = "856", workers = 2L, verbose = FALSE
+)
+```
+
+Selected records receive consecutive `record_id` values, in source-file order
+for multi-file conversion. Currently, filtering supports one three-digit
+`filter_tag`, an optional `filter_subfield`, and optional `filter_equals` (which
+requires a subfield). It requires **uncompressed UTF-8 MARCXML without a DTD**
+and an installation built with **Expat** support. Filtering cannot be combined
+with MARC-error recovery or `chunk_records`; parallel filtering of a single
+input file is not supported. Calls without filtering continue to use the
+existing unfiltered paths.
+
 ## How the two storage workflows are implemented
 
 The in-memory and Parquet workflows use the same logical representation and, for
