@@ -411,6 +411,12 @@
 #'   UTF-8 XML without DTD.
 #' @param filter_subfield Optional one-character subfield code within the tag.
 #' @param filter_equals Optional exact value of the specified subfield.
+#' @param filter Optional record-level query constructed with `marc_has()`
+#'   and combined with `&`, `|`, or `!`. Cannot be combined with the legacy
+#'   `filter_*` arguments. Each file is screened in one Expat pass; selected
+#'   records are written to Parquet in bounded native batches. Multi-file
+#'   parallel processing is supported, but single-file parallel filtering is
+#'   prohibited.
 #'
 #' @return Invisibly, a tibble with one row per resolved input file containing
 #'   the normalized input and output paths, record and row counts, number of
@@ -499,7 +505,8 @@ marcxml_to_parquet <- function(
   error_report = NULL,
   filter_tag = NULL,
   filter_subfield = NULL,
-  filter_equals = NULL
+  filter_equals = NULL,
+  filter = NULL
 ) {
   input_files <- .resolve_marcxml_files(file)
 
@@ -538,14 +545,21 @@ marcxml_to_parquet <- function(
   }
 
   on_marc_error <- match.arg(on_marc_error)
-  filtered <- .validate_c4_filter(
-    filter_tag, filter_subfield, filter_equals, chunk_records,
-    on_marc_error, error_report
-  )
+  if (is.null(filter)) {
+    filtered <- .validate_c4_filter(
+      filter_tag, filter_subfield, filter_equals, chunk_records,
+      on_marc_error, error_report
+    )
+  } else {
+    .c4_validate_query_filter(filter, filter_tag, filter_subfield,
+                              filter_equals, chunk_records, on_marc_error,
+                              error_report)
+    filtered <- TRUE
+  }
   if (filtered) {
     return(.c4_filtered_to_parquet(
       input_files, output_dir, batch_records, workers, compression, verbose,
-      filter_tag, filter_subfield, filter_equals
+      filter_tag, filter_subfield, filter_equals, filter
     ))
   }
 
