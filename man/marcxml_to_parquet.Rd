@@ -16,7 +16,8 @@ marcxml_to_parquet(
   error_report = NULL,
   filter_tag = NULL,
   filter_subfield = NULL,
-  filter_equals = NULL
+  filter_equals = NULL,
+  filter = NULL
 )
 }
 \arguments{
@@ -53,13 +54,20 @@ fatal. Recovery mode currently supports one input file with \code{workers = 1}.}
 \item{error_report}{Path for the CSV diagnostic report used when
 \code{on_marc_error = "skip"}. The file must not already exist.}
 
-\item{filter_tag}{Optional three-digit MARC field tag used for native
-record selection before materialization. Requires uncompressed UTF-8
-MARCXML without DTD; filtered record IDs are consecutive.}
+\item{filter_tag}{Optional three-digit MARC field tag. Filters records
+before native materialization using byte offsets. Requires uncompressed
+UTF-8 XML without DTD.}
 
 \item{filter_subfield}{Optional one-character subfield code within the tag.}
 
-\item{filter_equals}{Optional exact subfield text to match.}
+\item{filter_equals}{Optional exact value of the specified subfield.}
+
+\item{filter}{Optional record-level query constructed with \code{marc_has()}
+and combined with \code{&}, \code{|}, or \code{!}. Cannot be combined with the legacy
+\verb{filter_*} arguments. Each file is screened in one Expat pass; selected
+records are written to Parquet in bounded native batches. Multi-file
+parallel processing is supported, but single-file parallel filtering is
+prohibited.}
 }
 \value{
 Invisibly, a tibble with one row per resolved input file containing

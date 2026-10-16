@@ -13,6 +13,7 @@
 
 #ifdef MARCXMLR_HAS_EXPAT
 #include <expat.h>
+#include "marcxml-expat-compat.h"
 #define MARC_NS "http://www.loc.gov/MARC21/slim"
 typedef struct { int position; double start; double end; } OffsetHit;
 typedef struct {
@@ -86,7 +87,7 @@ static void XMLCALL start_node(void *ctx, const XML_Char *name,
         }
         ++s->count;
         s->record_depth = s->depth;
-        s->record_start = (double)XML_GetCurrentByteIndex(s->parser);
+        s->record_start = (double)MARCXMLR_EXPAT_BYTE_INDEX(s->parser);
         s->matched = s->field_depth = s->subfield_depth = 0;
         return;
     }
@@ -136,8 +137,8 @@ static void XMLCALL end_node(void *ctx, const XML_Char *name) {
                 s->capacity = cap;
             }
             s->hits[s->used++] = (OffsetHit){s->count, s->record_start,
-                (double)XML_GetCurrentByteIndex(s->parser) +
-                (double)XML_GetCurrentByteCount(s->parser)};
+                (double)MARCXMLR_EXPAT_BYTE_INDEX(s->parser) +
+                (double)MARCXMLR_EXPAT_BYTE_COUNT(s->parser)};
         }
         s->record_depth = s->matched = 0;
     }
@@ -201,7 +202,7 @@ SEXP attribute_visible C_marcxml_offset_index(SEXP path, SEXP tag,
             snprintf(error_message, sizeof(error_message),
                      "Expat screening: %s at line %lu",
                      s.error ? s.error : XML_ErrorString(XML_GetErrorCode(s.parser)),
-                     (unsigned long)XML_GetCurrentLineNumber(s.parser));
+                     (unsigned long)MARCXMLR_EXPAT_LINE_NUMBER(s.parser));
             failed = 1;
             break;
         }

@@ -3959,9 +3959,12 @@ SEXP attribute_visible C_marcxml_offset_parse_batch_stream(
 
 extern SEXP C_marcxml_offset_index(SEXP path, SEXP tag,
                                    SEXP subfield, SEXP equals);
+extern SEXP C_marcxml_query_offset_index(SEXP path, SEXP predicates,
+                                         SEXP program);
 
 static const R_CallMethodDef call_methods[] = {
     {"C_marcxml_offset_index", (DL_FUNC)&C_marcxml_offset_index, 4},
+    {"C_marcxml_query_offset_index", (DL_FUNC)&C_marcxml_query_offset_index, 3},
     {"C_marcxml_offset_parse_batch_stream", (DL_FUNC)&C_marcxml_offset_parse_batch_stream, 4},
     {"C_marcxml_recovery_filter_profile", (DL_FUNC)&C_marcxml_recovery_filter_profile, 1},
     {"C_marcxml_plan_open", (DL_FUNC)&C_marcxml_plan_open, 3},

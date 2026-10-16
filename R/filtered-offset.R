@@ -68,6 +68,39 @@
   tibble::new_tibble(columns, nrow = length(columns[[1L]]))
 }
 
+# Choose the existing scanner for legacy filters and the new single-pass
+# MARC-aware scanner for compiled query objects. No materialisation here.
+.c4_select_offsets <- function(file, filter_tag, filter_subfield,
+                               filter_equals, filter = NULL) {
+  if (is.null(filter)) {
+    return(.c4_screen_file(file, filter_tag, filter_subfield, filter_equals))
+  }
+  .c4_screen_query_file(file, filter)
+}
+
+# Validate the new `filter` argument while retaining the legacy C4 validator
+# unchanged for calls that do not use it.
+.c4_validate_query_filter <- function(filter, filter_tag, filter_subfield,
+                                      filter_equals, chunk_records,
+                                      on_marc_error, error_report) {
+  if (!is.null(filter_tag) || !is.null(filter_subfield) ||
+      !is.null(filter_equals)) {
+    stop("`filter` cannot be combined with `filter_tag`, `filter_subfield`, or ",
+         "`filter_equals`.", call. = FALSE)
+  }
+  if (!is.null(chunk_records)) {
+    stop("Filtering uses bounded native batches; `chunk_records` must be NULL.",
+         call. = FALSE)
+  }
+  if (on_marc_error != "stop" || !is.null(error_report)) {
+    stop("Offset filtering does not support MARC recovery or `error_report`.",
+         call. = FALSE)
+  }
+  # Reject malformed and unsupported expressions before scanning any files.
+  .c4_compile_marc_query(filter)
+  invisible(TRUE)
+}
+
 # Process selected XML byte ranges in bounded batches, using only the
 # optimized native streaming reader. Unfiltered ingestion never uses this path.
 .c4_visit_offsets <- function(file, offsets, consume,
@@ -126,8 +159,9 @@
 }
 
 .c4_read_filtered <- function(file, n_max, filter_tag,
-                              filter_subfield, filter_equals) {
-  offsets <- .c4_screen_file(file, filter_tag, filter_subfield, filter_equals)
+                              filter_subfield, filter_equals, filter = NULL) {
+  offsets <- .c4_select_offsets(file, filter_tag, filter_subfield,
+                                filter_equals, filter)
   if (is.finite(n_max)) {
     offsets <- offsets[offsets$source_position <= n_max, , drop = FALSE]
   }
@@ -193,7 +227,8 @@
 
 .c4_filtered_to_parquet <- function(input_files, output_dir, batch_records,
                                     workers, compression, verbose,
-                                    filter_tag, filter_subfield, filter_equals) {
+                                    filter_tag, filter_subfield, filter_equals,
+                                    filter = NULL) {
   if (length(input_files) == 1L && workers > 1L) {
     stop("Parallel filtering requires at least two MARCXML input files; ",
          "use `workers = 1L` for a single file.", call. = FALSE)
@@ -224,7 +259,8 @@
                     length(input_files), effective_workers))
   }
   indexes <- purrr::map(input_files, function(path) {
-    .c4_screen_file(path, filter_tag, filter_subfield, filter_equals)
+    .c4_select_offsets(path, filter_tag, filter_subfield,
+                       filter_equals, filter)
   }) |>
     futurize::futurize(when = effective_workers > 1L)
   counts <- vapply(indexes, nrow, integer(1L))
