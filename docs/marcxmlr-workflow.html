@@ -356,10 +356,12 @@ in identifying records for closer examination.</p>
 It focuses on a finding that merits investigation: <strong>the
 occurrence of an authority identifier in topical subject fields varies
 strongly with the number of subject subdivisions</strong>. We do not
-treat the absence of an identifier as proof of a cataloguing error. The
-package <a href="https://github.com/larry77/marcxmlr">README</a>
-introduces MARCXML, the canonical representation, editing and
-reconstruction; those examples are deliberately not repeated here.</p>
+treat the absence of an identifier as proof of a cataloguing error. We
+also show how to retrieve complete records for closer inspection using
+the same MARC-aware query before or after materialisation. The package
+<a href="https://github.com/larry77/marcxmlr">README</a> introduces
+MARCXML, the canonical representation, editing and reconstruction; those
+examples are deliberately not repeated here.</p>
 <div id="dataset-and-limits-of-inference" class="section level3">
 <h3>Dataset and limits of inference</h3>
 <p>The analysis uses <strong>1,000 genuine bibliographic
@@ -1030,9 +1032,148 @@ reason to retain the canonical representation until the analytical
 question is settled: flattening all subjects into a single record-level
 string would lose the association between a particular subdivided
 heading and its <code>$0</code>.</p>
+<p>To retrieve <strong>complete records</strong> containing at least one
+of the specific field instances identified above, use the field-level
+results to select record IDs, then join back to the canonical table:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" tabindex="-1"></a>candidate_ids <span class="ot">&lt;-</span> topical_fields <span class="sc">|&gt;</span></span>
+<span id="cb11-2"><a href="#cb11-2" tabindex="-1"></a>  <span class="fu">filter</span>(n_subdivisions <span class="sc">&gt;=</span> <span class="dv">2</span><span class="dt">L</span>, <span class="sc">!</span>has_0) <span class="sc">|&gt;</span></span>
+<span id="cb11-3"><a href="#cb11-3" tabindex="-1"></a>  <span class="fu">distinct</span>(record_id)</span>
+<span id="cb11-4"><a href="#cb11-4" tabindex="-1"></a></span>
+<span id="cb11-5"><a href="#cb11-5" tabindex="-1"></a>candidate_records <span class="ot">&lt;-</span> marc <span class="sc">|&gt;</span></span>
+<span id="cb11-6"><a href="#cb11-6" tabindex="-1"></a>  <span class="fu">semi_join</span>(candidate_ids, <span class="at">by =</span> <span class="st">&quot;record_id&quot;</span>)</span>
+<span id="cb11-7"><a href="#cb11-7" tabindex="-1"></a></span>
+<span id="cb11-8"><a href="#cb11-8" tabindex="-1"></a><span class="fu">c</span>(<span class="at">records =</span> <span class="fu">n_distinct</span>(candidate_records<span class="sc">$</span>record_id),</span>
+<span id="cb11-9"><a href="#cb11-9" tabindex="-1"></a>  <span class="at">canonical_rows =</span> <span class="fu">nrow</span>(candidate_records))</span>
+<span id="cb11-10"><a href="#cb11-10" tabindex="-1"></a><span class="co">#&gt;        records canonical_rows </span></span>
+<span id="cb11-11"><a href="#cb11-11" tabindex="-1"></a><span class="co">#&gt;            338          19122</span></span></code></pre></div>
+<p>This criterion applies to <strong>one occurrence of <code>650</code>
+at a time</strong>. A selected record may contain other <code>650</code>
+occurrences with <code>$0</code>. This field-specific analysis goes
+beyond the simpler record-level predicates supported by
+<code>marc_has()</code>; the canonical data remain available for such
+questions.</p>
+</div>
+<div id="reuse-a-marc-aware-query-to-select-complete-records" class="section level2">
+<h2>6. Reuse a MARC-aware query to select complete records</h2>
+<p>For common record-level selection tasks, the dedicated MARC query
+interface avoids this manual grouping and joining. As a separate
+example, suppose we want records that contain at least one topical
+<code>650</code> field with a <code>$0</code> subfield, but do not
+contain an <code>856</code> electronic-access field.</p>
+<p>We can express this without manually grouping the canonical rows by
+record:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" tabindex="-1"></a>q <span class="ot">&lt;-</span> <span class="fu">marc_has</span>(<span class="st">&quot;650&quot;</span>, <span class="at">subfield =</span> <span class="st">&quot;0&quot;</span>) <span class="sc">&amp;</span> <span class="sc">!</span><span class="fu">marc_has</span>(<span class="st">&quot;856&quot;</span>)</span>
+<span id="cb12-2"><a href="#cb12-2" tabindex="-1"></a></span>
+<span id="cb12-3"><a href="#cb12-3" tabindex="-1"></a>selected_table <span class="ot">&lt;-</span> <span class="fu">marc_filter_records</span>(marc, q)</span>
+<span id="cb12-4"><a href="#cb12-4" tabindex="-1"></a></span>
+<span id="cb12-5"><a href="#cb12-5" tabindex="-1"></a>query_summary <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(</span>
+<span id="cb12-6"><a href="#cb12-6" tabindex="-1"></a>  <span class="at">Measure =</span> <span class="fu">c</span>(<span class="st">&quot;Selected records&quot;</span>, <span class="st">&quot;Canonical rows retained&quot;</span>, <span class="st">&quot;650 field instances retained&quot;</span>),</span>
+<span id="cb12-7"><a href="#cb12-7" tabindex="-1"></a>  <span class="at">Value =</span> <span class="fu">c</span>(</span>
+<span id="cb12-8"><a href="#cb12-8" tabindex="-1"></a>    <span class="fu">n_distinct</span>(selected_table<span class="sc">$</span>record_id),</span>
+<span id="cb12-9"><a href="#cb12-9" tabindex="-1"></a>    <span class="fu">nrow</span>(selected_table),</span>
+<span id="cb12-10"><a href="#cb12-10" tabindex="-1"></a>    selected_table <span class="sc">|&gt;</span></span>
+<span id="cb12-11"><a href="#cb12-11" tabindex="-1"></a>      <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb12-12"><a href="#cb12-12" tabindex="-1"></a>      <span class="fu">distinct</span>(record_id, field_order) <span class="sc">|&gt;</span></span>
+<span id="cb12-13"><a href="#cb12-13" tabindex="-1"></a>      <span class="fu">nrow</span>()</span>
+<span id="cb12-14"><a href="#cb12-14" tabindex="-1"></a>  )</span>
+<span id="cb12-15"><a href="#cb12-15" tabindex="-1"></a>)</span>
+<span id="cb12-16"><a href="#cb12-16" tabindex="-1"></a>knitr<span class="sc">::</span><span class="fu">kable</span>(query_summary)</span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Measure</th>
+<th align="right">Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Selected records</td>
+<td align="right">441</td>
+</tr>
+<tr class="even">
+<td align="left">Canonical rows retained</td>
+<td align="right">25004</td>
+</tr>
+<tr class="odd">
+<td align="left">650 field instances retained</td>
+<td align="right">1062</td>
+</tr>
+</tbody>
+</table>
+<p>In this sample, <strong>441 records</strong> match, contributing
+<strong>25,004 canonical rows</strong> and <strong>1,062 topical
+<code>650</code> field instances</strong>. All fields of these records
+are retained, not just their <code>650$0</code> rows. The query
+establishes the <em>presence</em> of <code>$0</code>, not the validity
+or resolution of an authority identifier. It also does not imply that a
+record’s every <code>650</code> field contains <code>$0</code>.</p>
+<p>The <em>same</em> query can instead be evaluated <strong>before
+materialisation</strong>, using the native Expat prefilter to avoid
+expanding records that do not match. Native prefiltering requires an
+Expat-enabled build; the vignette runs this check when Expat is
+available and otherwise reports the optional capability as
+unavailable:</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" tabindex="-1"></a>selected_xml <span class="ot">&lt;-</span> <span class="fu">tryCatch</span>(</span>
+<span id="cb13-2"><a href="#cb13-2" tabindex="-1"></a>  <span class="fu">read_marcxml</span>(xml_file, <span class="at">filter =</span> q),</span>
+<span id="cb13-3"><a href="#cb13-3" tabindex="-1"></a>  <span class="at">error =</span> <span class="cf">function</span>(e) {</span>
+<span id="cb13-4"><a href="#cb13-4" tabindex="-1"></a>    <span class="cf">if</span> (<span class="fu">grepl</span>(<span class="st">&quot;requires Expat support at package build time&quot;</span>,</span>
+<span id="cb13-5"><a href="#cb13-5" tabindex="-1"></a>              <span class="fu">conditionMessage</span>(e), <span class="at">fixed =</span> <span class="cn">TRUE</span>)) <span class="fu">return</span>(<span class="cn">NULL</span>)</span>
+<span id="cb13-6"><a href="#cb13-6" tabindex="-1"></a>    <span class="fu">stop</span>(e)</span>
+<span id="cb13-7"><a href="#cb13-7" tabindex="-1"></a>  }</span>
+<span id="cb13-8"><a href="#cb13-8" tabindex="-1"></a>)</span>
+<span id="cb13-9"><a href="#cb13-9" tabindex="-1"></a></span>
+<span id="cb13-10"><a href="#cb13-10" tabindex="-1"></a><span class="cf">if</span> (<span class="sc">!</span><span class="fu">is.null</span>(selected_xml)) {</span>
+<span id="cb13-11"><a href="#cb13-11" tabindex="-1"></a>  <span class="co"># Compare bibliographic control numbers, not numeric record_id values:</span></span>
+<span id="cb13-12"><a href="#cb13-12" tabindex="-1"></a>  <span class="co"># native prefiltering renumbers selected records consecutively.</span></span>
+<span id="cb13-13"><a href="#cb13-13" tabindex="-1"></a>  control_numbers <span class="ot">&lt;-</span> <span class="cf">function</span>(x) {</span>
+<span id="cb13-14"><a href="#cb13-14" tabindex="-1"></a>    x <span class="sc">|&gt;</span></span>
+<span id="cb13-15"><a href="#cb13-15" tabindex="-1"></a>      <span class="fu">filter</span>(field_type <span class="sc">==</span> <span class="st">&quot;controlfield&quot;</span>, tag <span class="sc">==</span> <span class="st">&quot;001&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb13-16"><a href="#cb13-16" tabindex="-1"></a>      <span class="fu">pull</span>(value) <span class="sc">|&gt;</span></span>
+<span id="cb13-17"><a href="#cb13-17" tabindex="-1"></a>      <span class="fu">sort</span>()</span>
+<span id="cb13-18"><a href="#cb13-18" tabindex="-1"></a>  }</span>
+<span id="cb13-19"><a href="#cb13-19" tabindex="-1"></a>  <span class="fu">stopifnot</span>(<span class="fu">identical</span>(<span class="fu">control_numbers</span>(selected_xml),</span>
+<span id="cb13-20"><a href="#cb13-20" tabindex="-1"></a>                      <span class="fu">control_numbers</span>(selected_table)))</span>
+<span id="cb13-21"><a href="#cb13-21" tabindex="-1"></a>  knitr<span class="sc">::</span><span class="fu">kable</span>(<span class="fu">data.frame</span>(</span>
+<span id="cb13-22"><a href="#cb13-22" tabindex="-1"></a>    <span class="at">Method =</span> <span class="fu">c</span>(<span class="st">&quot;Before materialisation&quot;</span>, <span class="st">&quot;After materialisation&quot;</span>),</span>
+<span id="cb13-23"><a href="#cb13-23" tabindex="-1"></a>    <span class="at">Records =</span> <span class="fu">c</span>(<span class="fu">n_distinct</span>(selected_xml<span class="sc">$</span>record_id),</span>
+<span id="cb13-24"><a href="#cb13-24" tabindex="-1"></a>                <span class="fu">n_distinct</span>(selected_table<span class="sc">$</span>record_id)),</span>
+<span id="cb13-25"><a href="#cb13-25" tabindex="-1"></a>    <span class="at">Rows =</span> <span class="fu">c</span>(<span class="fu">nrow</span>(selected_xml), <span class="fu">nrow</span>(selected_table))</span>
+<span id="cb13-26"><a href="#cb13-26" tabindex="-1"></a>  ))</span>
+<span id="cb13-27"><a href="#cb13-27" tabindex="-1"></a>} <span class="cf">else</span> {</span>
+<span id="cb13-28"><a href="#cb13-28" tabindex="-1"></a>  <span class="fu">cat</span>(<span class="st">&quot;Native XML prefiltering unavailable: this build lacks Expat support.</span><span class="sc">\n</span><span class="st">&quot;</span>)</span>
+<span id="cb13-29"><a href="#cb13-29" tabindex="-1"></a>}</span></code></pre></div>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Method</th>
+<th align="right">Records</th>
+<th align="right">Rows</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Before materialisation</td>
+<td align="right">441</td>
+<td align="right">25004</td>
+</tr>
+<tr class="even">
+<td align="left">After materialisation</td>
+<td align="right">441</td>
+<td align="right">25004</td>
+</tr>
+</tbody>
+</table>
+<p>The query means <strong>the record</strong> contains a matching
+<code>650$0</code> <em>and</em> lacks <code>856</code>. It does not
+establish relationships between subfields in one occurrence of a
+repeated <code>650</code> field. Those occurrence-specific questions are
+better answered from the canonical columns <code>record_id</code> and
+<code>field_order</code>, as in the statistical analysis above. Generic
+<code>dplyr</code> expressions remain available after materialisation,
+but are not accepted as native ingestion filters.</p>
 </div>
 <div id="from-a-sample-to-a-catalogue-scale-study" class="section level2">
-<h2>6. From a sample to a catalogue-scale study</h2>
+<h2>7. From a sample to a catalogue-scale study</h2>
 <p>The sample is intentionally small enough for the vignette to build
 during package checks. To repeat the analysis on a full MARCXML file,
 point <code>read_marcxml()</code> at that file if the resulting table
@@ -1041,35 +1182,57 @@ fits comfortably in R. For a larger collection,
 disk. The following code is <strong>not executed by this
 vignette</strong>; it requires local GPO files and the optional
 <code>arrow</code> package.</p>
-<div class="sourceCode" id="cb11"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" tabindex="-1"></a>input_dir <span class="ot">&lt;-</span> <span class="st">&quot;/path/to/benchmark-inputs&quot;</span></span>
-<span id="cb11-2"><a href="#cb11-2" tabindex="-1"></a>source_files <span class="ot">&lt;-</span> <span class="fu">sort</span>(<span class="fu">Sys.glob</span>(<span class="fu">file.path</span>(</span>
-<span id="cb11-3"><a href="#cb11-3" tabindex="-1"></a>  input_dir, <span class="st">&quot;cataloging-records-all-cgp-XML-*.xml&quot;</span></span>
-<span id="cb11-4"><a href="#cb11-4" tabindex="-1"></a>)))</span>
-<span id="cb11-5"><a href="#cb11-5" tabindex="-1"></a></span>
-<span id="cb11-6"><a href="#cb11-6" tabindex="-1"></a><span class="fu">marcxml_to_parquet</span>(</span>
-<span id="cb11-7"><a href="#cb11-7" tabindex="-1"></a>  source_files,</span>
-<span id="cb11-8"><a href="#cb11-8" tabindex="-1"></a>  <span class="at">output_dir =</span> <span class="st">&quot;gpo-canonical-parquet&quot;</span>,</span>
-<span id="cb11-9"><a href="#cb11-9" tabindex="-1"></a>  <span class="at">batch_records =</span> <span class="dv">5000</span><span class="dt">L</span>,</span>
-<span id="cb11-10"><a href="#cb11-10" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">4</span><span class="dt">L</span></span>
-<span id="cb11-11"><a href="#cb11-11" tabindex="-1"></a>)</span>
-<span id="cb11-12"><a href="#cb11-12" tabindex="-1"></a></span>
-<span id="cb11-13"><a href="#cb11-13" tabindex="-1"></a>ds <span class="ot">&lt;-</span> arrow<span class="sc">::</span><span class="fu">open_dataset</span>(<span class="st">&quot;gpo-canonical-parquet&quot;</span>)</span>
-<span id="cb11-14"><a href="#cb11-14" tabindex="-1"></a></span>
-<span id="cb11-15"><a href="#cb11-15" tabindex="-1"></a><span class="co"># Field-instance counts, not canonical-row counts.</span></span>
-<span id="cb11-16"><a href="#cb11-16" tabindex="-1"></a>by_vocabulary <span class="ot">&lt;-</span> ds <span class="sc">|&gt;</span></span>
-<span id="cb11-17"><a href="#cb11-17" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>) <span class="sc">|&gt;</span></span>
-<span id="cb11-18"><a href="#cb11-18" tabindex="-1"></a>  <span class="fu">distinct</span>(record_id, field_order, ind2) <span class="sc">|&gt;</span></span>
-<span id="cb11-19"><a href="#cb11-19" tabindex="-1"></a>  <span class="fu">count</span>(ind2, <span class="at">name =</span> <span class="st">&quot;field_instances&quot;</span>) <span class="sc">|&gt;</span></span>
-<span id="cb11-20"><a href="#cb11-20" tabindex="-1"></a>  <span class="fu">collect</span>()</span>
-<span id="cb11-21"><a href="#cb11-21" tabindex="-1"></a></span>
-<span id="cb11-22"><a href="#cb11-22" tabindex="-1"></a>with_id <span class="ot">&lt;-</span> ds <span class="sc">|&gt;</span></span>
-<span id="cb11-23"><a href="#cb11-23" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>, subfield_code <span class="sc">==</span> <span class="st">&quot;0&quot;</span>,</span>
-<span id="cb11-24"><a href="#cb11-24" tabindex="-1"></a>         <span class="sc">!</span><span class="fu">is.na</span>(value), value <span class="sc">!=</span> <span class="st">&quot;&quot;</span>) <span class="sc">|&gt;</span></span>
-<span id="cb11-25"><a href="#cb11-25" tabindex="-1"></a>  <span class="fu">distinct</span>(record_id, field_order, ind2) <span class="sc">|&gt;</span></span>
-<span id="cb11-26"><a href="#cb11-26" tabindex="-1"></a>  <span class="fu">count</span>(ind2, <span class="at">name =</span> <span class="st">&quot;with_0&quot;</span>) <span class="sc">|&gt;</span></span>
-<span id="cb11-27"><a href="#cb11-27" tabindex="-1"></a>  <span class="fu">collect</span>()</span>
-<span id="cb11-28"><a href="#cb11-28" tabindex="-1"></a></span>
-<span id="cb11-29"><a href="#cb11-29" tabindex="-1"></a><span class="fu">left_join</span>(by_vocabulary, with_id, <span class="at">by =</span> <span class="st">&quot;ind2&quot;</span>)</span></code></pre></div>
+<div class="sourceCode" id="cb14"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb14-1"><a href="#cb14-1" tabindex="-1"></a>input_dir <span class="ot">&lt;-</span> <span class="st">&quot;/path/to/benchmark-inputs&quot;</span></span>
+<span id="cb14-2"><a href="#cb14-2" tabindex="-1"></a>source_files <span class="ot">&lt;-</span> <span class="fu">sort</span>(<span class="fu">Sys.glob</span>(<span class="fu">file.path</span>(</span>
+<span id="cb14-3"><a href="#cb14-3" tabindex="-1"></a>  input_dir, <span class="st">&quot;cataloging-records-all-cgp-XML-*.xml&quot;</span></span>
+<span id="cb14-4"><a href="#cb14-4" tabindex="-1"></a>)))</span>
+<span id="cb14-5"><a href="#cb14-5" tabindex="-1"></a></span>
+<span id="cb14-6"><a href="#cb14-6" tabindex="-1"></a><span class="fu">marcxml_to_parquet</span>(</span>
+<span id="cb14-7"><a href="#cb14-7" tabindex="-1"></a>  source_files,</span>
+<span id="cb14-8"><a href="#cb14-8" tabindex="-1"></a>  <span class="at">output_dir =</span> <span class="st">&quot;gpo-canonical-parquet&quot;</span>,</span>
+<span id="cb14-9"><a href="#cb14-9" tabindex="-1"></a>  <span class="at">batch_records =</span> <span class="dv">5000</span><span class="dt">L</span>,</span>
+<span id="cb14-10"><a href="#cb14-10" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">4</span><span class="dt">L</span></span>
+<span id="cb14-11"><a href="#cb14-11" tabindex="-1"></a>)</span>
+<span id="cb14-12"><a href="#cb14-12" tabindex="-1"></a></span>
+<span id="cb14-13"><a href="#cb14-13" tabindex="-1"></a>ds <span class="ot">&lt;-</span> arrow<span class="sc">::</span><span class="fu">open_dataset</span>(<span class="st">&quot;gpo-canonical-parquet&quot;</span>)</span>
+<span id="cb14-14"><a href="#cb14-14" tabindex="-1"></a></span>
+<span id="cb14-15"><a href="#cb14-15" tabindex="-1"></a><span class="co"># Field-instance counts, not canonical-row counts.</span></span>
+<span id="cb14-16"><a href="#cb14-16" tabindex="-1"></a>by_vocabulary <span class="ot">&lt;-</span> ds <span class="sc">|&gt;</span></span>
+<span id="cb14-17"><a href="#cb14-17" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb14-18"><a href="#cb14-18" tabindex="-1"></a>  <span class="fu">distinct</span>(record_id, field_order, ind2) <span class="sc">|&gt;</span></span>
+<span id="cb14-19"><a href="#cb14-19" tabindex="-1"></a>  <span class="fu">count</span>(ind2, <span class="at">name =</span> <span class="st">&quot;field_instances&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb14-20"><a href="#cb14-20" tabindex="-1"></a>  <span class="fu">collect</span>()</span>
+<span id="cb14-21"><a href="#cb14-21" tabindex="-1"></a></span>
+<span id="cb14-22"><a href="#cb14-22" tabindex="-1"></a>with_id <span class="ot">&lt;-</span> ds <span class="sc">|&gt;</span></span>
+<span id="cb14-23"><a href="#cb14-23" tabindex="-1"></a>  <span class="fu">filter</span>(tag <span class="sc">==</span> <span class="st">&quot;650&quot;</span>, subfield_code <span class="sc">==</span> <span class="st">&quot;0&quot;</span>,</span>
+<span id="cb14-24"><a href="#cb14-24" tabindex="-1"></a>         <span class="sc">!</span><span class="fu">is.na</span>(value), value <span class="sc">!=</span> <span class="st">&quot;&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb14-25"><a href="#cb14-25" tabindex="-1"></a>  <span class="fu">distinct</span>(record_id, field_order, ind2) <span class="sc">|&gt;</span></span>
+<span id="cb14-26"><a href="#cb14-26" tabindex="-1"></a>  <span class="fu">count</span>(ind2, <span class="at">name =</span> <span class="st">&quot;with_0&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb14-27"><a href="#cb14-27" tabindex="-1"></a>  <span class="fu">collect</span>()</span>
+<span id="cb14-28"><a href="#cb14-28" tabindex="-1"></a></span>
+<span id="cb14-29"><a href="#cb14-29" tabindex="-1"></a><span class="fu">left_join</span>(by_vocabulary, with_id, <span class="at">by =</span> <span class="st">&quot;ind2&quot;</span>)</span></code></pre></div>
+<p>For a <em>focused extraction</em> from those same source files, the
+query defined above can be passed directly to the Parquet streaming
+workflow. Each file is screened once, and parallel workers are assigned
+<strong>different input files</strong>. Alternatively, apply the query
+lazily to the unfiltered Arrow Dataset. These are alternative ways to
+obtain complete selected records, not steps that need to be performed
+together:</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" tabindex="-1"></a><span class="co"># Select during ingestion; do not materialise the full catalogue.</span></span>
+<span id="cb15-2"><a href="#cb15-2" tabindex="-1"></a><span class="fu">marcxml_to_parquet</span>(</span>
+<span id="cb15-3"><a href="#cb15-3" tabindex="-1"></a>  source_files,</span>
+<span id="cb15-4"><a href="#cb15-4" tabindex="-1"></a>  <span class="at">output_dir =</span> <span class="st">&quot;gpo-selected-parquet&quot;</span>,</span>
+<span id="cb15-5"><a href="#cb15-5" tabindex="-1"></a>  <span class="at">filter =</span> q,</span>
+<span id="cb15-6"><a href="#cb15-6" tabindex="-1"></a>  <span class="at">batch_records =</span> <span class="dv">5000</span><span class="dt">L</span>,</span>
+<span id="cb15-7"><a href="#cb15-7" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">4</span><span class="dt">L</span></span>
+<span id="cb15-8"><a href="#cb15-8" tabindex="-1"></a>)</span>
+<span id="cb15-9"><a href="#cb15-9" tabindex="-1"></a></span>
+<span id="cb15-10"><a href="#cb15-10" tabindex="-1"></a><span class="co"># Or select complete records from the unfiltered Dataset already on disk.</span></span>
+<span id="cb15-11"><a href="#cb15-11" tabindex="-1"></a>selected_ds <span class="ot">&lt;-</span> <span class="fu">marc_filter_records</span>(ds, q)</span>
+<span id="cb15-12"><a href="#cb15-12" tabindex="-1"></a><span class="co"># selected_ds remains lazy; use dplyr::collect() only if it fits in memory.</span></span></code></pre></div>
+<p>The earlier catalogue-wide statistics should still use the
+<strong>unfiltered</strong> Dataset: filtering before estimating overall
+coverage or frequencies would change their denominators.</p>
 <p>A study of the full corpus would need to document which source files
 were included, any malformed records excluded, the date of the extract,
 and the sampling frame. It would also be worthwhile to stratify by
@@ -1086,8 +1249,12 @@ enabled by the same canonical MARCXML representation: record-level
 coverage, the per-record distribution of repeated fields, and
 conditional frequencies at the field-instance level. The final
 association between <code>$0</code> and subject subdivisions would be
-easy to mismeasure if subject field boundaries were lost. It remains a
-<strong>descriptive observation requiring bibliographic
+easy to mismeasure if subject field boundaries were lost. A MARC-aware
+query offers a complementary way to retrieve <strong>complete
+records</strong> for inspection, either during XML ingestion or from an
+existing canonical tibble or Arrow Dataset; more detailed field-level
+analysis remains available through ordinary R tools. The observed
+association is a <strong>descriptive finding requiring bibliographic
 interpretation</strong>, not a cataloguing compliance score or a claim
 of causality.</p>
 </div>
