@@ -17,6 +17,15 @@ The specialised query interface is optional: it helps with MARC-aware record
 selection without limiting subsequent analysis using `dplyr`, `data.table`,
 SQL or other tools.
 
+**Explore the package:**
+
+- [Quick start](#quick-start-from-marcxml-to-complete-records): read and filter a catalogue.
+- [Canonical representation](#the-canonical-representation): understand the 11 columns.
+- [Working with records in R](#working-with-the-same-record-in-r): analyse, validate and reconstruct MARCXML.
+- [Selecting complete MARC records](#selecting-complete-marc-records): reuse queries before or after materialisation.
+- [Large collections and Parquet](#large-collections-and-parquet): stream data and use multiple workers.
+- [Performance evaluation](#performance-evaluation) and [technical details](TECHNICAL.md).
+
 # MARC 21 and MARCXML
 
 [MARC 21](https://www.loc.gov/marc/) stands for **Machine-Readable Cataloging**
@@ -49,7 +58,9 @@ Install the current CRAN release with:
 install.packages("marcxmlr")
 ```
 
-To install the current development version from GitHub:
+The MARC-aware query interface (`marc_has()`, `marc_filter_records()` and
+`filter =` during ingestion) requires **version 0.5.0 or later**. If CRAN
+still offers an earlier version, install the version from GitHub:
 
 ```r
 # install.packages("pak")
@@ -63,36 +74,46 @@ record prefiltering additionally requires Expat support** at package build time
 (for example, `libexpat1-dev` on Debian or Ubuntu). Other parsing and writing
 features remain available on builds without Expat.
 
-# Quick start: one query, complete records
+# Quick start: from MARCXML to complete records
 
-The package includes a small MARCXML record for George Orwell's *Nineteen
-Eighty-Four*. Suppose we want records containing a subject term and an
-electronic link:
+`read_marcxml()` converts an XML catalogue into a **canonical tibble with 11
+columns**. This is an ordinary R table, but **one MARC record occupies multiple
+rows**: its Leader, control fields and data-field subfields are represented
+separately, tied together by `record_id`. The structure is explained in the
+[next section](#how-a-marc-record-is-structured).
+
+The bundled GPO sample contains **1,000 bibliographic records**. Here we select
+those containing the subject heading *Flood insurance* (`650$a`):
 
 ```r
 library(marcxmlr)
 
-file <- system.file("extdata", "orwell-marcxml.xml", package = "marcxmlr")
+file <- system.file("extdata", "gpo-cgp-part00-sample.xml", package = "marcxmlr")
+q <- marc_has("650", subfield = "a", equals = "Flood insurance")
 
-q <- marc_has("650", subfield = "a", contains = "Totalitarianism") &
-  marc_has("856", subfield = "u")
-
-# Select during XML ingestion: native prefiltering, then canonical materialisation.
+# Filter the XML before converting the matching records to tabular rows.
 selected <- read_marcxml(file, filter = q)
-nrow(selected)
-#> [1] 16
+dim(selected)  # 1,320 rows, 11 columns
+#> [1] 1320   11
+length(unique(selected$record_id))
+#> [1] 28
 
-# Or use the same query after the canonical data have been materialised.
-all_records <- read_marcxml(file)
-selected_again <- marc_filter_records(all_records, q)
+# The very same query works on an already materialised canonical table.
+canonical <- read_marcxml(file)
+dim(canonical)
+#> [1] 53808    11
+selected_again <- marc_filter_records(canonical, q)
 nrow(selected_again)
-#> [1] 16
+#> [1] 1320
 ```
 
-Both calls return **the complete matching MARC record** (all 16 canonical
-rows), not only its `650` or `856` rows. The same query can also filter an
-Arrow Dataset lazily. [Record-level querying](#selecting-complete-marc-records)
-is described in more detail below.
+**Both paths select the same 28 complete records**, not just the `650$a` rows
+that matched the query. These are alternatives: filter *during ingestion* to
+avoid converting unwanted records, or filter *after ingestion* if you already
+have the canonical table. In either case the result is ordinary tabular data,
+ready for further analysis with `dplyr` or other tools. The full querying
+interface, including Boolean combinations and Arrow Datasets, is explained
+[below](#selecting-complete-marc-records).
 
 # How a MARC record is structured
 
@@ -853,36 +874,36 @@ same **record**: they are not required to refer to the same occurrence of a
 repeated data field. Occurrence-specific relationships can be examined using
 `field_order` and `subfield_order` after materialisation.
 
-### One query before or after materialisation
+### Combining conditions across MARC fields
 
-The bundled GPO sample provides a larger, real-data example. Selecting records
-containing an `856` field yields four complete records, not four matching rows:
+Unlike ordinary row filtering, a conjunction can match conditions in
+**different fields of the same record**. In the GPO sample, we can select
+records about flood insurance that also contain a `710` corporate added-entry
+field:
 
 ```r
 gpo_xml <- system.file(
   "extdata", "gpo-cgp-part00-sample.xml", package = "marcxmlr"
 )
 
-q <- marc_has("856")
+q <- marc_has("650", subfield = "a", equals = "Flood insurance") &
+  marc_has("710")
 
-# Select before materialisation.
-from_xml <- read_marcxml(gpo_xml, filter = q)
-c(records = length(unique(from_xml$record_id)), rows = nrow(from_xml))
+matches <- read_marcxml(gpo_xml, filter = q)
+c(records = length(unique(matches$record_id)), rows = nrow(matches))
 #> records    rows
-#>       4     309
-
-# Select after materialisation, with the same query.
-canonical <- read_marcxml(gpo_xml)
-from_table <- marc_filter_records(canonical, q)
-c(records = length(unique(from_table$record_id)), rows = nrow(from_table))
-#> records    rows
-#>       4     309
+#>       9     466
 ```
 
-There is one identity detail worth knowing: **filtering during ingestion
-renumbers the selected records consecutively**. Filtering an existing tibble
-preserves its original `record_id` values. The records selected are equivalent,
-but numeric `record_id` values need not match between these two outputs.
+The `650$a` and `710` conditions need not occur in the same canonical row;
+they only need to belong to the same MARC record. All fields of the nine
+matching records are retained. Queries can also use `|`, `!` and parentheses,
+as illustrated above.
+
+One identity detail matters when comparing the two execution paths:
+**filtering during ingestion renumbers selected records consecutively**,
+whereas filtering an existing tibble preserves its original `record_id` values.
+Selection semantics are the same, but those numeric IDs need not match.
 
 ### Streaming and Arrow Datasets
 

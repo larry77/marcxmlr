@@ -420,7 +420,7 @@ Tests cover cases including:
 * Unicode and XML metacharacters;
 * streaming and batch boundaries;
 * output sharding;
-* failure behavior; and
+* failure behavior;
 * sequential and parallel execution;
 * record-level `marc_has()` Boolean queries, including negation and repeated
   field occurrences;
@@ -646,7 +646,8 @@ parallel-speedup claim.
 
 ## Interpretation, limits, and reproducibility
 
-The figures above support four observations on the tested GPO workloads:
+The core benchmarks and the separate filtering measurements support five
+observations on the tested GPO workloads:
 
 1. MARC-specific compiled parsing substantially reduced the cost of constructing
    the canonical table relative to the retained reference implementation.
@@ -657,9 +658,16 @@ The figures above support four observations on the tested GPO workloads:
    single file.
 4. Arrow-backed reconstruction avoided collecting a whole Dataset before
    writing, without showing a lower measured peak RSS on the tested workload.
+5. Native record prefiltering avoided materializing most records for restrictive
+   queries and reduced elapsed ingestion time in the exploratory tests, while a
+   permissive filter took approximately as long as an unfiltered read. This
+   fifth observation is based on development runs, not the repeated benchmark
+   campaign used for the other workflows.
 
-The experiment was conducted on **one Linux workstation** with a specific
-public corpus and fixed software versions. Record complexity, disk behavior,
+The main repeated benchmark campaign was conducted on **one Linux workstation**
+with a specific public corpus and fixed software versions. The C4 filtering
+measurements were gathered separately and are not treated as controlled
+comparisons against that campaign. Record complexity, disk behavior,
 cache state, compression, memory pressure, Arrow and `libxml2` versions, and
 CPU topology can all change the timings. The benchmark cannot establish an
 absolute upper catalogue size, a universal memory bound, a cross-platform

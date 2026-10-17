@@ -373,13 +373,33 @@ the canonical representation until the analytical question is settled:
 flattening all subjects into a single record-level string would lose the
 association between a particular subdivided heading and its `$0`.
 
+To retrieve **complete records** containing at least one of the specific
+field instances identified above, use the field-level results to select
+record IDs, then join back to the canonical table:
+
+```{r occurrence-specific-records}
+candidate_ids <- topical_fields |>
+  filter(n_subdivisions >= 2L, !has_0) |>
+  distinct(record_id)
+
+candidate_records <- marc |>
+  semi_join(candidate_ids, by = "record_id")
+
+c(records = n_distinct(candidate_records$record_id),
+  canonical_rows = nrow(candidate_records))
+```
+
+This criterion applies to **one occurrence of `650` at a time**. A selected
+record may contain other `650` occurrences with `$0`. This field-specific
+analysis goes beyond the simpler record-level predicates supported by
+`marc_has()`; the canonical data remain available for such questions.
+
 ## 6. Reuse a MARC-aware query to select complete records
 
-The previous analyses required ordinary `dplyr` operations on individual
-**field instances**. A different task is to select a *set of whole records*
-for subsequent inspection or analysis. For example, suppose we want records
-that contain at least one topical `650` field with a `$0` subfield, but do not
-contain an `856` electronic-access field.
+For common record-level selection tasks, the dedicated MARC query interface
+avoids this manual grouping and joining. As a separate example, suppose we
+want records that contain at least one topical `650` field with a `$0`
+subfield, but do not contain an `856` electronic-access field.
 
 We can express this without manually grouping the canonical rows by record:
 
