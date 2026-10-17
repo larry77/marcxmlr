@@ -1,6 +1,6 @@
 Package: marcxmlr
-Title: Faithful and Scalable MARCXML Parsing
-Version: 0.4.0
+Title: Efficient MARCXML Processing and Record Querying
+Version: 0.5.0
 Authors@R: 
     person("Lorenzo", "Isella", email = "lorenzo.isella@gmail.com",
            role = c("aut", "cre"))
@@ -8,11 +8,13 @@ Description: Parses Machine-Readable Cataloging ('MARC 21') XML
     <https://www.loc.gov/standards/marcxml/> into a canonical tidy long
     representation while preserving leaders, control fields, data fields,
     indicators, repeated fields, repeated subfields, and source order.
-    Provides in-memory reading, bounded-memory conversion to 'Parquet',
+    Provides in-memory reading, batched conversion to 'Parquet',
     and reconstruction of MARCXML from canonical data.
-    Supports structural diagnostics for in-memory and 'Arrow'-backed
-    representations, optional recovery from malformed MARC records,
-    and local parallel processing.
+    Supports MARC-aware selection of complete records before materialisation
+    using native XML prefiltering, and after materialisation on canonical
+    tables and 'Arrow' datasets. Includes structural diagnostics for
+    in-memory and 'Arrow'-backed representations, optional recovery from
+    malformed MARC records, and local parallel processing.
 License: MIT + file LICENSE
 URL: https://github.com/larry77/marcxmlr
 BugReports: https://github.com/larry77/marcxmlr/issues

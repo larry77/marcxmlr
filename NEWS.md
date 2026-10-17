@@ -1,3 +1,23 @@
+# marcxmlr 0.5.0
+
+* Add `marc_has()` for MARC-aware complete-record queries using field tags,
+  subfields, indicators, exact values, and literal substring matching. Combine
+  conditions with `&`, `|`, and `!` using record-level Boolean semantics.
+* Add `marc_filter_records()` to select complete records from canonical tibbles
+  and lazy Arrow Datasets using the same query specification.
+* Add `filter` to `read_marcxml()` and `marcxml_to_parquet()` so the same
+  MARC-aware query can select complete records during XML ingestion, before
+  the canonical representation is materialised.
+* Implement single-pass native Expat query screening with record byte offsets,
+  reusing the existing native C4 materialisation and batched Parquet output.
+* Support MARC-aware filtering of multiple XML files processed sequentially or
+  in parallel, while retaining the restriction on parallel filtering within a
+  single file.
+* Preserve the original unfiltered execution paths and the legacy
+  `filter_tag`, `filter_subfield`, and `filter_equals` interface.
+* Extend regression tests and documentation for query parity across XML,
+  tibbles, and Arrow, including streaming and multi-file processing.
+
 # marcxmlr 0.4.0
 
 * Add optional native malformed-record recovery to `read_marcxml()` and

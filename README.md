@@ -3,7 +3,19 @@
 [![R-CMD-check](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/larry77/marcxmlr/actions/workflows/R-CMD-check.yaml)
 [![CRAN status](https://www.r-pkg.org/badges/version/marcxmlr)](https://CRAN.R-project.org/package=marcxmlr)
 
-**Convert MARCXML into a reusable, structurally faithful table for analysis with the tools you choose.**
+**Read, query, analyse and write MARCXML while preserving the structure of complete MARC records.**
+
+`marcxmlr` converts MARCXML to a predictable 11-column canonical table for
+analysis with R, Arrow and other tabular tools. It can also **select complete
+records before materialisation** using a native MARC-aware query engine, or
+apply **the same query afterwards** to a tibble or Arrow Dataset. Large
+catalogues can be streamed to Parquet, with file-level parallel processing for
+collections distributed across multiple XML files. The canonical data can be
+validated, edited and written back to MARCXML.
+
+The specialised query interface is optional: it helps with MARC-aware record
+selection without limiting subsequent analysis using `dplyr`, `data.table`,
+SQL or other tools.
 
 # MARC 21 and MARCXML
 
@@ -46,7 +58,41 @@ pak::pak("larry77/marcxmlr")
 
 Source installation from GitHub requires a C toolchain and libxml2 development
 headers and libraries. On Debian and Ubuntu these are normally provided by
-`r-base-dev` and `libxml2-dev`; Windows source builds use Rtools.
+`r-base-dev` and `libxml2-dev`; Windows source builds use Rtools. **Native
+record prefiltering additionally requires Expat support** at package build time
+(for example, `libexpat1-dev` on Debian or Ubuntu). Other parsing and writing
+features remain available on builds without Expat.
+
+# Quick start: one query, complete records
+
+The package includes a small MARCXML record for George Orwell's *Nineteen
+Eighty-Four*. Suppose we want records containing a subject term and an
+electronic link:
+
+```r
+library(marcxmlr)
+
+file <- system.file("extdata", "orwell-marcxml.xml", package = "marcxmlr")
+
+q <- marc_has("650", subfield = "a", contains = "Totalitarianism") &
+  marc_has("856", subfield = "u")
+
+# Select during XML ingestion: native prefiltering, then canonical materialisation.
+selected <- read_marcxml(file, filter = q)
+nrow(selected)
+#> [1] 16
+
+# Or use the same query after the canonical data have been materialised.
+all_records <- read_marcxml(file)
+selected_again <- marc_filter_records(all_records, q)
+nrow(selected_again)
+#> [1] 16
+```
+
+Both calls return **the complete matching MARC record** (all 16 canonical
+rows), not only its `650` or `856` rows. The same query can also filter an
+Arrow Dataset lazily. [Record-level querying](#selecting-complete-marc-records)
+is described in more detail below.
 
 # How a MARC record is structured
 
@@ -191,9 +237,9 @@ ordinary tabular data. Four requirements guide the design of `marcxmlr`:
 3. **MARC-native queryability.** Keep tags, indicators and subfield codes
    directly accessible as columns. Someone familiar with [MARC 21 content
    designation](https://www.loc.gov/marc/bibliographic/) can locate `245$a` or
-   `856$u` using an ordinary filter on `tag` and `subfield_code`, rather than
-   learning a new way of expressing familiar catalogue questions. See
-   [the MARC query examples](#why-the-representation-is-analyst-friendly).
+   `856$u` with ordinary table filters, or use `marc_has()` to select complete
+   records before or after materialisation. See [the MARC-aware query
+   interface](#selecting-complete-marc-records).
 4. **Local interpretability.** Each row carries enough context to identify its
    MARC element and, for a subfield, the field instance to which it belongs.
    Interpreting one row does not depend on joining another table, unpacking a
@@ -752,90 +798,176 @@ point and additional worker processes may be slower. Parallel execution is more
 naturally useful when substantial independent files can be assigned to separate
 workers.
 
-## Prefiltering complete MARC records
+## Selecting complete MARC records
 
-When only records with particular MARC content are needed, `marcxmlr` can
-**select records during ingestion**, before expanding them into the canonical
-11-column table. This differs from filtering canonical rows afterwards:
-**every field of a matching record is retained**, not only the field that
-satisfied the condition. For selective queries, this can avoid materializing
-many unwanted records.
+MARC records contain many rows in the canonical representation. A conventional
+`dplyr::filter()` selects **rows**; sometimes the desired result is instead
+**every field of each record** satisfying a bibliographic condition. The two
+new public functions address that distinction:
 
-For example, select bibliographic records containing at least one `856` field
-(electronic location and access) from the bundled 1,000-record GPO sample:
+* `marc_has()` **defines** a MARC-aware, record-level query; it does not
+  immediately evaluate it.
+* `marc_filter_records()` **applies** that query to an existing canonical
+  tibble or Arrow Dataset, retaining all rows of selected records.
+
+During XML ingestion, the same query is supplied through the `filter` argument
+of `read_marcxml()` or `marcxml_to_parquet()`. Native Expat screening identifies
+matching records, and the native libxml2 reader materialises only those complete
+records. For restrictive queries this avoids materialising most of the
+catalogue before deciding what to keep.
+
+### Expressing a MARC-aware query
+
+`marc_has()` supports a field `tag` (including `"LDR"` for the Leader), an
+optional `subfield`, `equals` for a case-sensitive exact value, `contains` for
+a case-sensitive **literal substring**, and optional `ind1` and `ind2`.
+`equals` and `contains` cannot be combined in the same call.
+
+```r
+# Any record with an electronic location field.
+marc_has("856")
+
+# An electronic URL containing a particular domain.
+marc_has("856", subfield = "u", contains = "europa.eu")
+
+# A subject field with specified indicators and a controlled-vocabulary code.
+marc_has("650", subfield = "2", equals = "EUROVOC",
+         ind1 = "0", ind2 = "7")
+```
+
+Queries can be combined with ordinary R operators `&` (AND), `|` (OR), and
+`!` (NOT), including nested expressions. **The operators work at record
+level**, so different `marc_has()` conditions may match different fields or
+subfields of the same record:
+
+```r
+q <- (marc_has("650", subfield = "a", contains = "Economics") |
+      marc_has("650", subfield = "a", contains = "Trade")) &
+     marc_has("856", subfield = "u") &
+     !marc_has("999")
+```
+
+Within *one* `marc_has()` call, the specified conditions must match the same
+canonical row. By contrast, two calls combined with `&` need only match the
+same **record**: they are not required to refer to the same occurrence of a
+repeated data field. Occurrence-specific relationships can be examined using
+`field_order` and `subfield_order` after materialisation.
+
+### One query before or after materialisation
+
+The bundled GPO sample provides a larger, real-data example. Selecting records
+containing an `856` field yields four complete records, not four matching rows:
 
 ```r
 gpo_xml <- system.file(
   "extdata", "gpo-cgp-part00-sample.xml", package = "marcxmlr"
 )
 
-links <- read_marcxml(gpo_xml, filter_tag = "856")
-c(records = length(unique(links$record_id)), rows = nrow(links))
+q <- marc_has("856")
+
+# Select before materialisation.
+from_xml <- read_marcxml(gpo_xml, filter = q)
+c(records = length(unique(from_xml$record_id)), rows = nrow(from_xml))
+#> records    rows
+#>       4     309
+
+# Select after materialisation, with the same query.
+canonical <- read_marcxml(gpo_xml)
+from_table <- marc_filter_records(canonical, q)
+c(records = length(unique(from_table$record_id)), rows = nrow(from_table))
 #> records    rows
 #>       4     309
 ```
 
-The result contains **four complete records** (309 canonical rows), not just
-their `856` fields. Filtering can also require a particular subfield and an
-**exact text value**. Using the Orwell record introduced earlier:
+There is one identity detail worth knowing: **filtering during ingestion
+renumbers the selected records consecutively**. Filtering an existing tibble
+preserves its original `record_id` values. The records selected are equivalent,
+but numeric `record_id` values need not match between these two outputs.
+
+### Streaming and Arrow Datasets
+
+The same query can be used to write only selected records to Parquet (requires
+`arrow`):
 
 ```r
-matched <- read_marcxml(
-  source_xml,
-  filter_tag = "650",
-  filter_subfield = "a",
-  filter_equals = "Totalitarianism"
+out <- tempfile("gpo-selected-parquet-")
+marcxml_to_parquet(
+  gpo_xml,
+  output_dir = out,
+  filter = q,
+  batch_records = 200L,
+  workers = 1L,
+  verbose = FALSE
 )
-identical(matched, marc)
-#> [1] TRUE
+
+# Query the materialised Parquet Dataset again without collecting it first.
+ds <- arrow::open_dataset(out)
+records_with_subjects <- ds |>
+  marc_filter_records(marc_has("650", subfield = "a")) |>
+  dplyr::collect()
 ```
 
-The condition matches a `650 $a` value, but the entire record is returned.
-Matching is case-sensitive and `filter_equals` is an exact string, not a
-regular expression. If no record matches, the result is an empty tibble with
-the same 11 columns.
+The Arrow-backed result stays lazy until `collect()`; supported filters and
+joins are translated to Arrow operations. `record_id` must identify records
+uniquely **across the entire Dataset**, including all Parquet fragments.
 
-Prefiltering is also available when writing **Parquet** (requires `arrow`):
-
-```r
-out <- tempfile("gpo-856-parquet-")
-info <- marcxml_to_parquet(
-  gpo_xml, output_dir = out,
-  filter_tag = "856", workers = 1L, verbose = FALSE
-)
-sum(info$records)
-#> [1] 4
-```
-
-For a collection already split into files, filtering can use **file-level
-parallelism** (requires the package's parallel backends):
+For multiple input XML files, the same native query can be evaluated
+independently by file-level workers:
 
 ```r
 marcxml_to_parquet(
   c(source_xml, gpo_xml),
   output_dir = tempfile("selected-catalogue-"),
-  filter_tag = "856", workers = 2L, verbose = FALSE
+  filter = marc_has("856"),
+  workers = 2L,
+  verbose = FALSE
 )
 ```
 
-Selected records receive consecutive `record_id` values, in source-file order
-for multi-file conversion. Currently, filtering supports one three-digit
-`filter_tag`, an optional `filter_subfield`, and optional `filter_equals` (which
-requires a subfield). It requires **uncompressed UTF-8 MARCXML without a DTD**
-and an installation built with **Expat** support. Filtering cannot be combined
-with MARC-error recovery or `chunk_records`; parallel filtering of a single
-input file is not supported. Calls without filtering continue to use the
-existing unfiltered paths.
+Selected records receive globally unique, consecutive `record_id` values in
+input-file order within that conversion. **Parallel filtering within one XML
+file is deliberately unsupported**; the supported filtered parallel workflow
+assigns different input files to different workers.
+
+### What remains available outside the query interface
+
+`marc_has()` is a convenience for selecting *complete records*, not a general
+purpose expression evaluator. **Arbitrary `dplyr` predicates cannot run in the
+native XML prefilter**, and `marc_filter_records()` accepts MARC query objects
+rather than raw `dplyr` expressions. After materialisation, however, the
+canonical table remains an ordinary tibble: users can apply `dplyr`, regular
+expressions, custom joins, aggregations or their own analysis without using
+`marc_has()` at all. Arrow-backed datasets likewise support the operations
+that Arrow can translate.
+
+The original `filter_tag`, `filter_subfield` and `filter_equals` arguments are
+still available for backward compatibility:
+
+```r
+read_marcxml(
+  gpo_xml,
+  filter_tag = "856"
+)
+```
+
+Do not combine these legacy arguments with `filter = q`. Both native filtering
+interfaces require **uncompressed UTF-8 MARCXML without a DTD** and an
+installation built with **Expat** support. Filtering cannot be combined with
+MARC-error recovery or `chunk_records`. Calls without filtering retain the
+original unfiltered execution paths. If no record matches, the result has the
+canonical schema with zero rows (or an empty canonical Parquet Dataset).
 
 ## How the two storage workflows are implemented
 
 The in-memory and Parquet workflows use the same logical representation and, for
-supported ordinary MARCXML, the same package-specific compiled parser. The
-important difference is how much of the expanded canonical representation is
-materialized at one time.
+supported ordinary **unfiltered** MARCXML, the same package-specific compiled
+parser. The important difference is how much of the expanded canonical
+representation is materialized at one time. For filtered XML, Expat first
+identifies the matching records and their byte offsets; the native reader then
+materializes those complete records using the same canonical schema.
 
-The optimized sequential parser is implemented in C on top of `libxml2` and
-uses two passes over the input. The first pass determines how many canonical rows
+The optimized sequential unfiltered parser is implemented in C on top of
+`libxml2` and uses two passes over the input. The first pass determines how many canonical rows
 each selected record will produce. The second pass allocates the required output
 vectors at their final size and fills them directly while traversing the MARC
 structure in source order.
@@ -876,12 +1008,15 @@ This is a practical recommendation rather than a universal threshold: CPU,
 memory, storage, compression, file layout and record complexity all matter.
 Benchmark representative input before relying on additional workers.
 
-## Performance scale for version 0.3.1
+## Performance evaluation
 
-The following measurements are included to indicate scale, not to promise
-performance on other systems. They were obtained with `marcxmlr` 0.3.1 on a
-Lenovo ThinkPad P50 with an Intel Core i7-6820HQ, 31.18 GiB RAM and a local SSD,
-using R 4.6.1 and Arrow 25.0.1.
+The following measurements illustrate the scale of **unfiltered** reading,
+Parquet conversion and MARCXML writing. The underlying execution paths remain
+part of the current package, including version 0.5.0. The measurements were
+originally collected with `marcxmlr` 0.3.1 on a Lenovo ThinkPad P50 with an
+Intel Core i7-6820HQ, 31.18 GiB RAM and a local SSD, using R 4.6.1 and
+Arrow 25.0.1; they have **not** been rerun as a 0.5.0 benchmark campaign.
+Timings indicate scale, not guaranteed performance on other systems.
 
 | Workflow | Input | Median elapsed time |
 |---|---:|---:|
@@ -911,9 +1046,10 @@ interpretation. It does **not** attempt to:
 * automatically map a catalogue to another metadata model; or
 * replace complete MARC 21 content or MARCXML schema validation.
 
-Its job is narrower: make supported MARCXML available through a stable,
-structurally faithful canonical table. Subsequent selection, reshaping, mapping
-and analysis are choices made with general-purpose tools in R or elsewhere.
+Its job is to make supported MARCXML available through a stable,
+structurally faithful canonical table, with optional efficient selection of
+complete records before or after materialisation. Subsequent reshaping, mapping
+and analysis remain choices made with general-purpose tools in R or elsewhere.
 
 For further reading:
 

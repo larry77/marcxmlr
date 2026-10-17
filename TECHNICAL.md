@@ -1,15 +1,17 @@
 # Technical implementation and performance
 
-This note is for readers who want to understand how `marcxmlr` implements and
-scales the canonical MARC representation described in the main
-[README](README.md). It focuses on the computational design of `marcxmlr` 0.3.1:
-the compiled parser, bounded Parquet workflow, Arrow-backed writer, process-level
-parallelism and benchmark methodology.
+This note explains the computational architecture and measured performance of
+`marcxmlr`, complementing the canonical representation described in the main
+[README](README.md). It covers the native XML readers, optional MARC-aware
+record prefiltering, in-memory and Parquet workflows, Arrow-backed writing,
+process-level parallelism, and reproducibility of benchmarks.
 
-The logical data model does not change with scale. `read_marcxml()` and
-`marcxml_to_parquet()` produce the same 11-column canonical representation;
-the difference is how much of that representation is materialized in memory and
-where it is stored.
+The logical data model is consistent across execution paths.
+`read_marcxml()` and `marcxml_to_parquet()` produce the same **11-column
+canonical representation**, whether records are selected during ingestion or
+processed without a filter. The principal differences are *which complete
+records* are materialized and *how much* of their canonical representation is
+held in memory at once.
 
 ## Architecture
 
@@ -27,10 +29,12 @@ canonical columns
 R tibble
 ```
 
-For supported ordinary MARCXML, `read_marcxml()` uses a package-specific C
-parser built on `libxml2`. The repeated traversal of records, fields and
-subfields happens in compiled code rather than through many small high-level XML
-queries from R.
+For supported ordinary **unfiltered** MARCXML, `read_marcxml()` uses a
+package-specific C parser built on `libxml2`. The repeated traversal of
+records, fields and subfields happens in compiled code rather than through
+many small high-level XML queries from R. Optional native prefiltering takes
+a separate screening path, described below, before materializing selected
+records into the same canonical schema.
 
 On the optimized path, `libxml2`'s `xmlTextReader` acts as a forward cursor over
 the XML document. When the reader reaches a MARC `<record>`,
@@ -40,7 +44,7 @@ not first materialized as an R object.
 
 ### Two-pass planning and exact allocation
 
-The compiled parser traverses the input twice.
+The optimized **unfiltered** parser traverses the input twice.
 
 The **first pass** is a planning pass. It checks that the document has a
 supported MARCXML root and namespace and determines how many canonical rows each
@@ -71,17 +75,129 @@ The compiled path is deliberately conservative. Retained compatibility and
 reference paths remain useful both for input outside the optimized subset and
 for correctness testing against an independently implemented result.
 
+## MARC-aware selection during XML ingestion
+
+The `filter` argument of `read_marcxml()` and `marcxml_to_parquet()` accepts a
+record-level query constructed with `marc_has()`. The query language is deliberately
+small: a predicate can test a MARC `tag`, optional `subfield`, `ind1` and `ind2`,
+and either a case-sensitive `equals` value or a case-sensitive, literal
+`contains` substring. The familiar R operators `&`, `|` and `!` combine these
+predicates, including nested Boolean expressions.
+
+```r
+q <- marc_has("650", subfield = "a", contains = "Economics") &
+  marc_has("856", subfield = "u") &
+  !marc_has("999")
+
+selected <- read_marcxml("catalogue.xml", filter = q)
+```
+
+A predicate's conditions apply to **one canonical row**: for example,
+`marc_has("650", subfield = "2", equals = "EUROVOC")` requires the value to
+occur in subfield `2` of a `650` field. The Boolean operators, in contrast,
+operate on **complete records**. In `A & B`, the matching fields may be in
+separate occurrences of the same tag or in entirely different fields of one
+record; the query does not assert that they belong to the same field
+occurrence.
+
+### Native single-pass screening and selected-record materialization
+
+```text
+MARC-aware query ──→ R predicate/Boolean-program compilation
+                                 │
+MARCXML file ──→ Expat record scan (one scan per input file)
+                                 │
+                      matched record byte ranges
+                                 │
+                   libxml2 native C4 materializer
+                                 │
+                      complete canonical records
+                         ┌───────┴────────┐
+                         ▼                ▼
+                       tibble       Parquet batches
+```
+
+The R layer compiles a nested `marc_query` into a list of primitive predicates
+and a compact Boolean evaluation program. The native Expat scanner traverses
+the XML **once per file**; it updates predicate matches while visiting fields
+and subfields, then evaluates the Boolean program at the end of each record.
+For matching records it retains the original source position and start/end
+byte offsets. It does **not** expand all records into canonical rows merely to
+find those that match.
+
+The selected byte ranges feed the existing native offset-based `libxml2`
+materializer, which reconstructs **all canonical rows** of each selected
+record. Filtering during XML ingestion assigns consecutive `record_id` values
+to the selected records. The `source_position` in the intermediate offset
+index preserves their position in the original XML; it is not a public
+canonical column.
+
+The original unfiltered parser and the earlier `filter_tag`, `filter_subfield`
+and `filter_equals` interface are retained. The new `filter` argument cannot
+be combined with those legacy arguments. The legacy filters use their own
+native offset scanner; both filtered implementations share the native
+selected-record materializer. This keeps the new query evaluator isolated
+from the unfiltered execution paths.
+
+The offset-based scanners require **uncompressed UTF-8 MARCXML without DTDs**
+and Expat support at package build time. They do not support malformed-record
+recovery, `error_report`, or `chunk_records`. These restrictions apply to
+native filtering, **not automatically to the unfiltered reader**, which has
+its own supported-input and recovery behavior. An unsupported filtered
+configuration is rejected rather than silently sent through a different
+algorithm.
+
+### Filtered streaming and memory use
+
+`marcxml_to_parquet(..., filter = q)` first selects matching byte ranges and
+then materializes and writes those records in bounded native batches. The
+working memory for the **expanded canonical rows** is limited by the active
+batch, with both record-count and byte-size limits in the offset materializer.
+The index of **all matching offsets**, however, is retained before batch
+writing begins: its storage grows with the number of selected records. Large
+individual field values and runtime/library allocations also contribute to
+peak memory. The correct claim is therefore **bounded canonical-batch
+materialization**, not constant end-to-end RAM consumption.
+
+## Reusing queries after materialization
+
+```r
+canonical <- read_marcxml("catalogue.xml")
+selected <- marc_filter_records(canonical, q)
+
+# Or apply the same query lazily to a Parquet-backed Arrow Dataset:
+ds <- arrow::open_dataset("catalogue_parquet")
+selected_arrow <- marc_filter_records(ds, q) |>
+  dplyr::collect()
+```
+
+`marc_filter_records()` identifies matching `record_id` values using `dplyr`
+filters and joins, then returns **every canonical row** for those records.
+With Arrow Datasets, operations remain lazy until collection; only operations
+supported by the Arrow translation layer can be promised. A `record_id` must
+identify one record uniquely across the **entire** materialized dataset,
+including all Parquet fragments. Filtering existing canonical data preserves
+the original record IDs, unlike filtered XML ingestion.
+
+The query interface is optional. After materialization, the canonical table
+also supports unrestricted ordinary R analysis, including user-written
+`dplyr` pipelines and regular expressions. Arbitrary `dplyr` expressions are
+**not** accepted by the native prefilter, and `marc_filter_records()` itself
+accepts MARC query objects rather than arbitrary `dplyr` predicates.
+
 ## In-memory workflow
 
-For ordinary sequential use:
+For ordinary **unfiltered** sequential use:
 
 ```r
 marc <- read_marcxml("catalogue.xml")
 ```
 
-The first pass plans the selected input; the second pass allocates the complete
-canonical vectors once and fills them in source order. The R layer then returns
-the result as a tibble.
+The first pass plans the input; the second pass allocates the complete
+canonical vectors once and fills them in source order. The R layer returns
+the result as a tibble. With `filter = q`, the separate Expat screening and
+native offset materializer described above instead select and reconstruct
+only matching complete records.
 
 The important memory cost is the expanded canonical table itself. A MARCXML
 file that is modest on disk can still produce a much larger canonical table
@@ -101,7 +217,7 @@ marcxml_to_parquet(
 )
 ```
 
-The default sequential path can be summarized as:
+The default **unfiltered** sequential path can be summarized as:
 
 ```text
 MARCXML
@@ -147,6 +263,8 @@ subjects <- collect(subjects)
 Supported filters, projections and aggregations can therefore be evaluated
 against the disk-backed dataset before the reduced result is collected into R.
 The physical storage strategy changes; the canonical schema does not.
+The filtered Parquet path described above uses the same output schema but
+selects record offsets before materializing any canonical batches.
 
 ## Writing canonical data as MARCXML
 
@@ -221,7 +339,8 @@ the repeated MARC-specific work into compiled C, so extra R processes have to
 save enough work to offset process startup, scheduling, serialization and result
 coordination.
 
-There are two different parallel cases.
+There are two different parallel cases for **unfiltered** ingestion;
+filtered multi-file processing is described separately below.
 
 ### Within one MARCXML file
 
@@ -264,6 +383,20 @@ internally. Before parallel conversion begins, record counts are used to assign
 non-overlapping global `record_id` ranges in deterministic input-file order.
 Worker completion order therefore does not change logical record identity.
 
+### Parallel native prefiltering
+
+For **filtered** input, file-level parallelism is the supported strategy:
+each worker evaluates the same compiled MARC query against its own complete
+XML file and materializes selected records into Parquet parts. The source-file
+order determines the non-overlapping, consecutive global `record_id` ranges,
+regardless of which worker finishes first. Sequential and parallel filtered
+conversion were checked for equality across all 11 canonical columns.
+
+A filtered **single input file with `workers > 1` is rejected deliberately**.
+The fact that unfiltered single-file parallelism exists does not imply that it
+uses the native prefilter or can be enabled for it. No within-file parallel
+query screening or virtual splitting is part of the current implementation.
+
 The practical lesson is simple: **more workers are not automatically faster**.
 Parallelism is most attractive when the physical input already consists of
 substantial independent files.
@@ -288,7 +421,13 @@ Tests cover cases including:
 * streaming and batch boundaries;
 * output sharding;
 * failure behavior; and
-* sequential and parallel execution.
+* sequential and parallel execution;
+* record-level `marc_has()` Boolean queries, including negation and repeated
+  field occurrences;
+* agreement between the native query scanner and post-materialization
+  tibble/Arrow selection; and
+* preservation of complete canonical records across filtered in-memory,
+  Parquet, and multi-file parallel workflows.
 
 The distinction between structural and occurrence coordinates also guides
 validation. Structural ambiguity is an error because a writer cannot safely
@@ -296,16 +435,19 @@ infer the intended MARC hierarchy. Stale or renumberable occurrence coordinates
 can instead be warnings when `field_order` and `subfield_order` still define an
 unambiguous structure.
 
-# Performance evaluation: archived benchmarks for `marcxmlr` 0.3.1
+# Performance evaluation
 
-This section reports the **2 October 2026 benchmark evidence** for `marcxmlr`
-0.3.1. It evaluates concrete implementation choices: the package-specific C
-parser versus a retained R/`xml2` reference implementation; complete in-memory
-materialization versus batched Parquet conversion; process-level parallelism
-within one XML file versus across independent files; and MARCXML reconstruction
-from an Arrow Dataset. All measurements below come from the same frozen
-benchmark campaign. No measurements have been extrapolated to subsequent
-releases, including 0.4.0.
+The following benchmarks quantify the package's **core unfiltered execution
+paths**: its dedicated C parser versus a retained R/`xml2` reference;
+in-memory materialization versus batched Parquet conversion; one-file and
+multi-file parallelism; and reconstruction from an Arrow Dataset. These paths
+remain in the current package alongside the new native filtering interface.
+
+The measurements were recorded on **2 October 2026**, using the then-current
+`marcxmlr` 0.3.1 implementation. Their relevance is architectural: the
+underlying unfiltered algorithms were preserved. The numbers are **observations
+from that test campaign, not a newly repeated benchmark of version 0.5.0**.
+The new filtering workflow is assessed separately below.
 
 The intended comparison is among **ways of producing or consuming the same
 canonical 11-column data**, not among alternative metadata models. The results
@@ -457,7 +599,52 @@ default for a single file; consider file-level workers when the catalogue is
 already divided into substantial independent MARCXML files**. The optimal
 worker count remains workload- and machine-dependent.
 
-## Interpretation, limits, and archived evidence
+## Native record selection: exploratory measurements
+
+The C4/native-query implementation was tested separately during 0.5.0
+development on the **40,000-record GPO part 00** input (2,143,952 canonical
+rows). Selection and complete-record equality were checked against the
+post-materialization tibble and Arrow implementations, including exact values,
+substrings, indicators, `&`, `|`, `!`, and nested expressions.
+
+These are **single development-run timings**, not the five-repetition benchmark
+protocol above. They illustrate the magnitude of screening cost and the
+benefits of avoiding full materialization for restrictive queries; they are
+not suitable for a formal performance ranking across machines or releases.
+
+| Ingestion scenario | Records returned | Canonical rows returned | Elapsed (s) |
+|---|---:|---:|---:|
+| Unfiltered `read_marcxml()` | 40,000 | 2,143,952 | 8.641 |
+| Native filter: `marc_has("650")` | 34,907 | 1,899,368 | 8.721 |
+| Legacy native exact match: `650$a = "Refrigeration and refrigerating machinery"` | 7 | 403 | 3.730 |
+| Native compound query: `(856$u OR 650$a contains "Refriger") AND NOT 999` | 136 | 8,783 | 3.586 |
+| Same compound query, Parquet streaming (one file) | 136 | 8,783 | 3.860 |
+
+The restrictive exact-match filter ran approximately **2.3× as fast**
+as that particular unfiltered run, even though the complete XML still had
+to be screened. A permissive filter that selected nearly all records took
+about the same time as unfiltered ingestion. Measurements were obtained from
+separate executions; no confidence intervals are implied.
+
+One additional exploratory test selected **all 40,000 records** with
+`marc_has("001")` and measured peak process RSS using GNU `/usr/bin/time -v`:
+
+| Workflow | Elapsed (s) | Peak RSS (MiB) |
+|---|---:|---:|
+| Filtered in-memory ingestion | 10.81 | 412.4 |
+| Filtered Parquet streaming, `batch_records = 1000` | 12.55 | 274.8 |
+
+With Parquet streaming and the same input/query, batches of 250, 1,000 and
+5,000 records gave approximately **271.0, 274.8 and 334.0 MiB** peak RSS,
+respectively. This is consistent with larger active batches requiring more
+memory, but it **does not prove input-size-independent peak RAM**: the
+selected-offset index, package/runtime overhead and individual record size
+also contribute. In a separate multi-file correctness run with one 40,000-
+record file and one 1,000-record file, two workers were slower than one;
+uneven file sizes and worker overhead make that case unsuitable for a general
+parallel-speedup claim.
+
+## Interpretation, limits, and reproducibility
 
 The figures above support four observations on the tested GPO workloads:
 
@@ -474,18 +661,19 @@ The figures above support four observations on the tested GPO workloads:
 The experiment was conducted on **one Linux workstation** with a specific
 public corpus and fixed software versions. Record complexity, disk behavior,
 cache state, compression, memory pressure, Arrow and `libxml2` versions, and
-CPU topology can all change the timings. In particular, the benchmark cannot
-establish an absolute upper catalogue size, a universal memory bound, a
-cross-platform speed ranking, or a quantitative speedup for `marcxmlr` 0.4.0.
-It also does not compare against all other MARCXML parsers.
+CPU topology can all change the timings. The benchmark cannot establish an
+absolute upper catalogue size, a universal memory bound, a cross-platform
+speed ranking, or newly measured throughput for every later release. It also
+does not compare against all other MARCXML parsers.
 
-The historical benchmark evidence is **frozen rather than regenerated for this
-technical note**. The recorded results include individual timing observations,
+The core unfiltered benchmark evidence is **frozen rather than regenerated
+for this technical note**. Its recorded results include individual timing observations,
 peak-RSS observations, exact-equality verification, and derived summaries. The
 reproducibility materials also document software settings, original input files
 and hashes, and the benchmark runner. The input corpus and runner are referenced
 at [Zenodo, DOI: 10.5281/zenodo.23160503](https://doi.org/10.5281/zenodo.23160503).
 For audit purposes, the key distinction is between **recorded observations**
 and values derived from them (medians, IQRs, percentage changes, and speedups).
-No fresh runs, new hardware comparisons, or reconstructed measurements were
-used for this revision.
+No retrospective recalculation or hardware comparison was used to update the
+core benchmark tables. The separate C4 measurements above are explicitly
+identified as later exploratory development runs.

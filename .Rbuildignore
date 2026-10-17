@@ -9,3 +9,5 @@
 ^benchmark-results$
 ^configure\.log$
 ^TECHNICAL\.md$
+^configure-expat[.]log$
+^docs$

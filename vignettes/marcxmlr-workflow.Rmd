@@ -30,9 +30,11 @@ This vignette develops a small case study using genuine MARCXML data. It focuses
 on a finding that merits investigation: **the occurrence of an authority
 identifier in topical subject fields varies strongly with the number of subject
 subdivisions**. We do not treat the absence of an identifier as proof of a
-cataloguing error. The package [README](https://github.com/larry77/marcxmlr)
-introduces MARCXML, the canonical representation, editing and reconstruction;
-those examples are deliberately not repeated here.
+cataloguing error. We also show how to retrieve complete records for closer
+inspection using the same MARC-aware query before or after materialisation.
+The package [README](https://github.com/larry77/marcxmlr) introduces MARCXML,
+the canonical representation, editing and reconstruction; those examples are
+deliberately not repeated here.
 
 ### Dataset and limits of inference
 
@@ -371,7 +373,87 @@ the canonical representation until the analytical question is settled:
 flattening all subjects into a single record-level string would lose the
 association between a particular subdivided heading and its `$0`.
 
-## 6. From a sample to a catalogue-scale study
+## 6. Reuse a MARC-aware query to select complete records
+
+The previous analyses required ordinary `dplyr` operations on individual
+**field instances**. A different task is to select a *set of whole records*
+for subsequent inspection or analysis. For example, suppose we want records
+that contain at least one topical `650` field with a `$0` subfield, but do not
+contain an `856` electronic-access field.
+
+We can express this without manually grouping the canonical rows by record:
+
+```{r record-query}
+q <- marc_has("650", subfield = "0") & !marc_has("856")
+
+selected_table <- marc_filter_records(marc, q)
+
+query_summary <- data.frame(
+  Measure = c("Selected records", "Canonical rows retained", "650 field instances retained"),
+  Value = c(
+    n_distinct(selected_table$record_id),
+    nrow(selected_table),
+    selected_table |>
+      filter(tag == "650") |>
+      distinct(record_id, field_order) |>
+      nrow()
+  )
+)
+knitr::kable(query_summary)
+```
+
+In this sample, **441 records** match, contributing **25,004 canonical rows**
+and **1,062 topical `650` field instances**. All fields of these records are
+retained, not just their `650$0` rows. The query establishes the *presence* of
+`$0`, not the validity or resolution of an authority identifier. It also does
+not imply that a record's every `650` field contains `$0`.
+
+The *same* query can instead be evaluated **before materialisation**, using
+the native Expat prefilter to avoid expanding records that do not match. Native
+prefiltering requires an Expat-enabled build; the vignette runs this check
+when Expat is available and otherwise reports the optional capability as
+unavailable:
+
+```{r query-during-ingestion}
+selected_xml <- tryCatch(
+  read_marcxml(xml_file, filter = q),
+  error = function(e) {
+    if (grepl("requires Expat support at package build time",
+              conditionMessage(e), fixed = TRUE)) return(NULL)
+    stop(e)
+  }
+)
+
+if (!is.null(selected_xml)) {
+  # Compare bibliographic control numbers, not numeric record_id values:
+  # native prefiltering renumbers selected records consecutively.
+  control_numbers <- function(x) {
+    x |>
+      filter(field_type == "controlfield", tag == "001") |>
+      pull(value) |>
+      sort()
+  }
+  stopifnot(identical(control_numbers(selected_xml),
+                      control_numbers(selected_table)))
+  knitr::kable(data.frame(
+    Method = c("Before materialisation", "After materialisation"),
+    Records = c(n_distinct(selected_xml$record_id),
+                n_distinct(selected_table$record_id)),
+    Rows = c(nrow(selected_xml), nrow(selected_table))
+  ))
+} else {
+  cat("Native XML prefiltering unavailable: this build lacks Expat support.\n")
+}
+```
+
+The query means **the record** contains a matching `650$0` *and* lacks `856`.
+It does not establish relationships between subfields in one occurrence of a
+repeated `650` field. Those occurrence-specific questions are better answered
+from the canonical columns `record_id` and `field_order`, as in the statistical
+analysis above. Generic `dplyr` expressions remain available after
+materialisation, but are not accepted as native ingestion filters.
+
+## 7. From a sample to a catalogue-scale study
 
 The sample is intentionally small enough for the vignette to build during
 package checks. To repeat the analysis on a full MARCXML file, point
@@ -412,6 +494,32 @@ with_id <- ds |>
 left_join(by_vocabulary, with_id, by = "ind2")
 ```
 
+For a *focused extraction* from those same source files, the query defined
+above can be passed directly to the Parquet streaming workflow. Each file is
+screened once, and parallel workers are assigned **different input files**.
+Alternatively, apply the query lazily to the unfiltered Arrow Dataset. These
+are alternative ways to obtain complete selected records, not steps that need
+to be performed together:
+
+```{r full-catalogue-query, eval=FALSE}
+# Select during ingestion; do not materialise the full catalogue.
+marcxml_to_parquet(
+  source_files,
+  output_dir = "gpo-selected-parquet",
+  filter = q,
+  batch_records = 5000L,
+  workers = 4L
+)
+
+# Or select complete records from the unfiltered Dataset already on disk.
+selected_ds <- marc_filter_records(ds, q)
+# selected_ds remains lazy; use dplyr::collect() only if it fits in memory.
+```
+
+The earlier catalogue-wide statistics should still use the **unfiltered**
+Dataset: filtering before estimating overall coverage or frequencies would
+change their denominators.
+
 A study of the full corpus would need to document which source files were
 included, any malformed records excluded, the date of the extract, and the
 sampling frame. It would also be worthwhile to stratify by cataloguing
@@ -427,5 +535,9 @@ the same canonical MARCXML representation: record-level coverage, the
 per-record distribution of repeated fields, and conditional frequencies at
 the field-instance level. The final association between `$0` and subject
 subdivisions would be easy to mismeasure if subject field boundaries were
-lost. It remains a **descriptive observation requiring bibliographic
-interpretation**, not a cataloguing compliance score or a claim of causality.
+lost. A MARC-aware query offers a complementary way to retrieve **complete
+records** for inspection, either during XML ingestion or from an existing
+canonical tibble or Arrow Dataset; more detailed field-level analysis remains
+available through ordinary R tools. The observed association is a
+**descriptive finding requiring bibliographic interpretation**, not a
+cataloguing compliance score or a claim of causality.
