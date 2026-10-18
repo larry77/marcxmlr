@@ -24,7 +24,7 @@ SQL or other tools.
 - [Working with records in R](#working-with-the-same-record-in-r): analyse, validate and reconstruct MARCXML.
 - [Selecting complete MARC records](#selecting-complete-marc-records): reuse queries before or after materialisation.
 - [Large collections and Parquet](#large-collections-and-parquet): stream data and use multiple workers.
-- [Performance evaluation](#performance-evaluation) and [technical details](TECHNICAL.md).
+- [Performance evaluation](#performance-evaluation) and [technical details](https://github.com/larry77/marcxmlr/blob/main/TECHNICAL.md).
 
 # MARC 21 and MARCXML
 
