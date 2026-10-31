@@ -17,7 +17,8 @@ marcxml_to_parquet(
   filter_tag = NULL,
   filter_subfield = NULL,
   filter_equals = NULL,
-  filter = NULL
+  filter = NULL,
+  strategy = c("auto", "direct", "indexed")
 )
 }
 \arguments{
@@ -68,6 +69,16 @@ and combined with \code{&}, \code{|}, or \code{!}. Cannot be combined with the l
 records are written to Parquet in bounded native batches. Multi-file
 parallel processing is supported, but single-file parallel filtering is
 prohibited.}
+
+\item{strategy}{Parquet ingestion strategy: \code{"auto"} (default),
+\code{"direct"}, or \code{"indexed"}. Automatic selection uses the indexed
+engine for record-level filtering and unfiltered multi-file ingestion with
+multiple workers; other unfiltered calls retain the existing direct path.
+\code{"direct"} cannot be combined with a record filter. Explicit
+\code{"indexed"} requires supported uncompressed UTF-8 XML without DTD,
+\code{chunk_records = NULL}, and \code{on_marc_error = "stop"}.
+For unsupported XML, automatic unfiltered selection falls back to direct
+processing when the indexed engine reports a known format limitation.}
 }
 \value{
 Invisibly, a tibble with one row per resolved input file containing
@@ -87,6 +98,11 @@ The input must have a \code{collection} root in the official MARCXML namespace
 (\verb{http://www.loc.gov/MARC21/slim}) or no namespace. A standalone record can
 be read with \code{\link[=read_marcxml]{read_marcxml()}} but is not accepted by this collection
 converter.
+
+The \code{"auto"} strategy is an orchestration choice: it does not change the
+native parsers. The indexed strategy uses the existing Expat offset scanner
+with a match-all leader predicate for unfiltered input. Auto-selection
+does not override native MARC error-recovery handling.
 
 With \code{workers = 1} and default \code{chunk_records = NULL}, supported ordinary
 collections use a two-pass native libxml2 engine. The first pass validates

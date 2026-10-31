@@ -117,6 +117,10 @@
 #' @param filter_subfield Optional one-character subfield code to require
 #'   within `filter_tag`.
 #' @param filter_equals Optional exact text value for `filter_subfield`.
+#' @param strategy Compatibility argument. Only `"auto"` is meaningful
+#'   for this in-memory reader. Explicit `"direct"` and `"indexed"`
+#'   values produce a warning and are ignored; the existing in-memory
+#'   execution path, including MARC-aware filtering, is unchanged.
 #' @param filter Optional record-level query constructed with `marc_has()`
 #'   and combined with `&`, `|`, or `!`. Cannot be combined with the legacy
 #'   `filter_*` arguments. Uses one native Expat scan per XML file and returns
@@ -183,8 +187,18 @@ read_marcxml <- function(
   filter_tag = NULL,
   filter_subfield = NULL,
   filter_equals = NULL,
-  filter = NULL
+  filter = NULL,
+  strategy = c("auto", "direct", "indexed")
 ) {
+  strategy <- match.arg(strategy)
+  if (!identical(strategy, "auto")) {
+    warning(
+      "`strategy` is only supported by `marcxml_to_parquet()`; ",
+      "ignoring it in `read_marcxml()`.",
+      call. = FALSE
+    )
+  }
+
   valid_file <- is.character(file) &&
     length(file) == 1L &&
     !is.na(file)

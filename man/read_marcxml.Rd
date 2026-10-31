@@ -14,7 +14,8 @@ read_marcxml(
   filter_tag = NULL,
   filter_subfield = NULL,
   filter_equals = NULL,
-  filter = NULL
+  filter = NULL,
+  strategy = c("auto", "direct", "indexed")
 )
 }
 \arguments{
@@ -55,6 +56,11 @@ within \code{filter_tag}.}
 and combined with \code{&}, \code{|}, or \code{!}. Cannot be combined with the legacy
 \verb{filter_*} arguments. Uses one native Expat scan per XML file and returns
 complete selected records. The same limitations as native C4 apply.}
+
+\item{strategy}{Compatibility argument. Only \code{"auto"} is meaningful
+for this in-memory reader. Explicit \code{"direct"} and \code{"indexed"}
+values produce a warning and are ignored; the existing in-memory
+execution path, including MARC-aware filtering, is unchanged.}
 }
 \value{
 A tibble with columns \code{record_id}, \code{field_type}, \code{tag},

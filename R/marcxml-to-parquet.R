@@ -411,6 +411,15 @@
 #'   UTF-8 XML without DTD.
 #' @param filter_subfield Optional one-character subfield code within the tag.
 #' @param filter_equals Optional exact value of the specified subfield.
+#' @param strategy Parquet ingestion strategy: `"auto"` (default),
+#'   `"direct"`, or `"indexed"`. Automatic selection uses the indexed
+#'   engine for record-level filtering and unfiltered multi-file ingestion with
+#'   multiple workers; other unfiltered calls retain the existing direct path.
+#'   `"direct"` cannot be combined with a record filter. Explicit
+#'   `"indexed"` requires supported uncompressed UTF-8 XML without DTD,
+#'   `chunk_records = NULL`, and `on_marc_error = "stop"`.
+#'   For unsupported XML, automatic unfiltered selection falls back to direct
+#'   processing when the indexed engine reports a known format limitation.
 #' @param filter Optional record-level query constructed with `marc_has()`
 #'   and combined with `&`, `|`, or `!`. Cannot be combined with the legacy
 #'   `filter_*` arguments. Each file is screened in one Expat pass; selected
@@ -429,6 +438,11 @@
 #' (`http://www.loc.gov/MARC21/slim`) or no namespace. A standalone record can
 #' be read with [read_marcxml()] but is not accepted by this collection
 #' converter.
+#'
+#' The `"auto"` strategy is an orchestration choice: it does not change the
+#' native parsers. The indexed strategy uses the existing Expat offset scanner
+#' with a match-all leader predicate for unfiltered input. Auto-selection
+#' does not override native MARC error-recovery handling.
 #'
 #' With `workers = 1` and default `chunk_records = NULL`, supported ordinary
 #' collections use a two-pass native libxml2 engine. The first pass validates
@@ -506,9 +520,11 @@ marcxml_to_parquet <- function(
   filter_tag = NULL,
   filter_subfield = NULL,
   filter_equals = NULL,
-  filter = NULL
+  filter = NULL,
+  strategy = c("auto", "direct", "indexed")
 ) {
   input_files <- .resolve_marcxml_files(file)
+  strategy <- match.arg(strategy)
 
   if (!is.character(output_dir) ||
       length(output_dir) != 1L ||
@@ -556,11 +572,91 @@ marcxml_to_parquet <- function(
                               error_report)
     filtered <- TRUE
   }
-  if (filtered) {
-    return(.c4_filtered_to_parquet(
-      input_files, output_dir, batch_records, workers, compression, verbose,
-      filter_tag, filter_subfield, filter_equals, filter
-    ))
+  if (filtered && identical(strategy, "direct")) {
+    stop(
+      "`strategy = \"direct\"` cannot be used with MARC-aware filters; use ",
+      "`strategy = \"indexed\"` or `strategy = \"auto\"`.",
+      call. = FALSE
+    )
+  }
+
+  selected_strategy <- if (!identical(strategy, "auto")) {
+    strategy
+  } else if (filtered ||
+             (identical(on_marc_error, "stop") &&
+              is.null(error_report) &&
+              length(input_files) > 1L && workers > 1L)) {
+    "indexed"
+  } else {
+    "direct"
+  }
+
+  if (identical(selected_strategy, "indexed")) {
+    if (identical(on_marc_error, "skip") || !is.null(error_report)) {
+      stop(
+        "`strategy = \"indexed\"` does not support MARC recovery or ",
+        "`error_report`.",
+        call. = FALSE
+      )
+    }
+    if (!is.null(chunk_records)) {
+      stop(
+        "`strategy = \"indexed\"` requires `chunk_records = NULL`.",
+        call. = FALSE
+      )
+    }
+    if (!filtered && length(input_files) == 1L && workers > 1L) {
+      stop(
+        "Indexed processing of one MARCXML file requires `workers = 1`.",
+        call. = FALSE
+      )
+    }
+
+    # Reuse the established native record-query path for a match-all scan;
+    # no alternate parser or materializer is introduced here.
+    if (!filtered) {
+      filter <- marc_has("LDR")
+      .c4_validate_query_filter(
+        filter, filter_tag, filter_subfield, filter_equals,
+        chunk_records, on_marc_error, error_report
+      )
+    }
+
+    run_indexed <- function() {
+      .c4_filtered_to_parquet(
+        input_files, output_dir, batch_records, workers, compression, verbose,
+        filter_tag, filter_subfield, filter_equals, filter
+      )
+    }
+
+    if (identical(strategy, "auto") && !filtered) {
+      # Automatic dispatch must preserve the legacy unfiltered reader's
+      # support for inputs which cannot be handled by the offset scanner.
+      indexed_result <- tryCatch(
+        run_indexed(),
+        error = function(e) {
+          diagnostic <- conditionMessage(e)
+          unsupported_format <- grepl(
+            "Offset filtering (supports only|requires uncompressed)|DTD is unsupported",
+            diagnostic
+          )
+          if (!unsupported_format) {
+            stop(e)
+          }
+          structure(list(message = diagnostic),
+                    class = "marcxmlr_indexed_unsupported")
+        }
+      )
+      if (!inherits(indexed_result, "marcxmlr_indexed_unsupported")) {
+        return(indexed_result)
+      }
+      if (verbose) {
+        message("Indexed ingestion does not support this XML format; ",
+                "falling back to the direct strategy.")
+      }
+    } else {
+      return(run_indexed())
+    }
   }
 
   if (identical(on_marc_error, "skip")) {
