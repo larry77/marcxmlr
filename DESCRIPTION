@@ -1,6 +1,6 @@
 Package: marcxmlr
 Title: Efficient MARCXML Processing and Record Querying
-Version: 0.5.0
+Version: 0.5.1
 Authors@R: 
     person("Lorenzo", "Isella", email = "lorenzo.isella@gmail.com",
            role = c("aut", "cre"))
